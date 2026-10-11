@@ -5,6 +5,24 @@ All notable changes to NutriPal MCP are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-11
+
+Fixes the npm binary so the bundled CLI scripts are reachable when installed with `bunx`.
+
+### Fixed
+
+- `bunx nutripal-mcp auth` started the MCP server instead of the session setup command, so the
+  interactive prompt never appeared and the process appeared to hang. The bin now dispatches on a
+  subcommand, and `auth`, `live-check`, `diagnose` and `log-by-weight` all work from an npm install.
+- `log-by-weight` and `live-check` read `process.argv` directly; the launcher now strips the
+  subcommand before loading them so their argument parsing is unchanged.
+
+### Added
+
+- `bunx nutripal-mcp --help` prints every command, and `--version` prints the installed version.
+- Unknown subcommands print usage and exit non-zero instead of silently starting the server.
+- `serve` and `server` are accepted as explicit aliases for starting the MCP server.
+
 ## [0.1.0] - 2026-10-11
 
 First public release. A Bun + TypeScript MCP server that talks to MyFitnessPal's

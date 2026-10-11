@@ -95,7 +95,8 @@ Sign in to [MyFitnessPal](https://www.myfitnesspal.com/) in your browser, open d
 copy the value of the `__Secure-next-auth.session-token` cookie for `www.myfitnesspal.com`, then:
 
 ```bash
-bun run auth
+bun run auth              # from a cloned repo
+bunx nutripal-mcp auth    # from npm
 ```
 
 Paste the token at the hidden prompt. NutriPal verifies it against your account and stores it at
@@ -143,7 +144,8 @@ Prefer the cloned repo instead? Swap the command for `"bun"` with `["run", "/abs
 ### 4. Verify
 
 ```bash
-bun run live-check
+bun run live-check          # from a cloned repo
+bunx nutripal-mcp live-check   # from npm
 ```
 
 It checks your session plus every read path and prints a pass/fail list. Keep stdout clear when the
@@ -192,19 +194,22 @@ meals if you enabled them. Use `get_food_settings` to read your own labels. Date
 
 ## CLI scripts
 
-Everything the server can do is also reachable from the terminal.
+Everything the server can do is also reachable from the terminal. Installed from npm, the commands
+are `bunx nutripal-mcp <command>`; from a clone, `bun run <script>`.
 
-| Command | What it does |
-| --- | --- |
-| `bun run auth` | Verify a session cookie and save it with owner-only permissions |
-| `bun run start` | Launch the stdio server directly |
-| `bun run live-check` | Read-only sweep of every endpoint the tools depend on |
-| `bun run live-check --write` | Create one temporary private food, verify, edit, log, edit the entry, then delete both. Prints the temporary name or ID if cleanup fails so you can remove it manually |
-| `bun run log-by-weight banana 116` | Log a food by gram weight. Shows ranked results, picks an exact match interactively, and defaults to today's Snacks |
-| `bun run log-by-weight banana 116 --date 2026-10-11 --meal lunch` | Same, with explicit date and meal |
-| `bun run diagnose` | Probe read-only food routes and print status codes plus response structure |
-| `bun test` | Run the unit tests |
-| `bun run typecheck` | `tsc --noEmit` |
+| Command (npm) | Command (clone) | What it does |
+| --- | --- | --- |
+| `bunx nutripal-mcp auth` | `bun run auth` | Verify a session cookie and save it with owner-only permissions |
+| `bunx nutripal-mcp` | `bun run start` | Launch the stdio server |
+| `bunx nutripal-mcp live-check` | `bun run live-check` | Read-only sweep of every endpoint the tools depend on |
+| `bunx nutripal-mcp live-check --write` | `bun run live-check --write` | Create one temporary private food, verify, edit, log, edit the entry, then delete both. Prints the temporary name or ID if cleanup fails so you can remove it manually |
+| `bunx nutripal-mcp log-by-weight banana 116` | `bun run log-by-weight -- banana 116` | Log a food by gram weight. Shows ranked results, picks an exact match interactively, and defaults to today's Snacks |
+| `bunx nutripal-mcp log-by-weight banana 116 --date 2026-10-11 --meal lunch` | `bun run log-by-weight -- banana 116 --date 2026-10-11 --meal lunch` | Same, with explicit date and meal |
+| `bunx nutripal-mcp diagnose` | `bun run diagnose` | Probe read-only food routes and print status codes plus response structure |
+| `bunx nutripal-mcp --help` | — | Show all commands |
+| `bunx nutripal-mcp --version` | — | Print the installed version |
+
+From a clone you can also run `bun test` and `bun run typecheck`.
 
 `diagnose` and `live-check` never print the saved session or response bodies — only status codes and
 the shape of what came back.

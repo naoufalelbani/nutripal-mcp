@@ -1,6 +1,6 @@
 {
   "name": "nutripal-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for MyFitnessPal: read your food diary, search foods, log meals, water and weight from any MCP client.",
   "module": "src/server.ts",
   "type": "module",
