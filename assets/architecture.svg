@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="380" viewBox="0 0 1120 380" role="img" aria-label="NutriPal MCP architecture">
+  <defs>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#0d1526"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect width="1120" height="380" rx="20" fill="url(#frame)"/>
+  <rect x="1" y="1" width="1118" height="378" rx="20" fill="none" stroke="#1f2b45" stroke-width="2"/>
+
+  <text x="40" y="52" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#64748b" letter-spacing="2">REQUEST FLOW</text>
+
+  <!-- Client -->
+  <rect x="40" y="90" width="230" height="150" rx="14" fill="#111c31" stroke="#334155" stroke-width="1.5"/>
+  <text x="155" y="126" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" fill="#e2e8f0" text-anchor="middle">MCP client</text>
+  <text x="155" y="152" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">Claude Desktop · Claude Code</text>
+  <text x="155" y="174" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">Cursor · Windsurf · VS Code</text>
+  <text x="155" y="212" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" fill="#64748b" text-anchor="middle">asks: "log 116 g of banana"</text>
+
+  <!-- NutriPal -->
+  <rect x="445" y="76" width="240" height="178" rx="14" fill="#0f2318" stroke="#22c55e" stroke-width="2"/>
+  <text x="565" y="112" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#86efac" text-anchor="middle">NutriPal MCP</text>
+  <text x="565" y="136" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13.5" fill="#a7f3d0" text-anchor="middle">bun run src/server.ts</text>
+  <line x1="470" y1="152" x2="660" y2="152" stroke="#166534" stroke-width="1.5"/>
+  <text x="565" y="176" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#bbf7d0" text-anchor="middle">Zod input validation</text>
+  <text x="565" y="198" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#bbf7d0" text-anchor="middle">exact-ID writes only</text>
+  <text x="565" y="220" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#bbf7d0" text-anchor="middle">no logs · no stdout leaks</text>
+  <text x="565" y="240" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#4ade80" text-anchor="middle">25 tools</text>
+
+  <!-- MFP -->
+  <rect x="850" y="90" width="230" height="150" rx="14" fill="#1a1424" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="965" y="126" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" fill="#e2e8f0" text-anchor="middle">MyFitnessPal</text>
+  <text x="965" y="152" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" fill="#c4b5fd" text-anchor="middle">website endpoints</text>
+  <text x="965" y="176" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" fill="#94a3b8" text-anchor="middle">diary · foods · water</text>
+  <text x="965" y="196" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" fill="#94a3b8" text-anchor="middle">measurements · goals</text>
+  <text x="965" y="220" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#a78bfa" text-anchor="middle">unofficial · can change</text>
+
+  <!-- arrows -->
+  <line x1="272" y1="152" x2="438" y2="152" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="355" y="140" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#94a3b8" text-anchor="middle">stdio</text>
+
+  <line x1="688" y1="152" x2="843" y2="152" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="765" y="140" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#94a3b8" text-anchor="middle">HTTPS + cookie</text>
+
+  <line x1="843" y1="182" x2="695" y2="182" stroke="#475569" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+  <text x="765" y="205" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12.5" fill="#64748b" text-anchor="middle">JSON response → tool result</text>
+
+  <!-- session -->
+  <rect x="445" y="288" width="240" height="58" rx="12" fill="#111c31" stroke="#334155" stroke-width="1.5"/>
+  <text x="565" y="312" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#cbd5e1" text-anchor="middle">Session storage</text>
+  <text x="565" y="333" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#64748b" text-anchor="middle">~/.config/nutripal-mcp/session · 0600</text>
+  <line x1="565" y1="286" x2="565" y2="258" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="580" y="276" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12.5" fill="#64748b">read-only · never printed</text>
+
+  <text x="40" y="330" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13.5" fill="#64748b">Runs locally. No server process, no port, no cloud relay.</text>
+  <text x="40" y="352" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13.5" fill="#64748b">Your cookie never leaves your machine.</text>
+</svg>

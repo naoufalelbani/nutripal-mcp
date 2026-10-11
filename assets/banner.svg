@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="NutriPal MCP">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="55%" stop-color="#101a2e"/>
+      <stop offset="100%" stop-color="#0a1f1a"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4ade80"/>
+      <stop offset="100%" stop-color="#22c55e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4ade80"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="18%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#22c55e" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="320" rx="24" fill="url(#bg)"/>
+  <rect width="1200" height="320" rx="24" fill="url(#glow)"/>
+  <rect x="1" y="1" width="1198" height="318" rx="24" fill="none" stroke="#1f2b45" stroke-width="2"/>
+
+  <!-- plate -->
+  <circle cx="180" cy="160" r="92" fill="none" stroke="#1e293b" stroke-width="14"/>
+  <circle cx="180" cy="160" r="72" fill="#0f172a" stroke="#24334d" stroke-width="2"/>
+
+  <!-- leaf -->
+  <path d="M180 108 C 216 128, 226 172, 200 206 C 168 214, 134 192, 136 156 C 138 128, 156 110, 180 108 Z" fill="url(#leaf)"/>
+  <path d="M182 116 C 178 146, 172 178, 158 200" fill="none" stroke="#0b1220" stroke-opacity="0.45" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- fork tines -->
+  <g stroke="#38bdf8" stroke-width="7" stroke-linecap="round" opacity="0.85">
+    <line x1="252" y1="118" x2="252" y2="164"/>
+    <line x1="270" y1="118" x2="270" y2="164"/>
+    <line x1="288" y1="118" x2="288" y2="164"/>
+  </g>
+  <path d="M270 164 L 270 214" stroke="#38bdf8" stroke-width="9" stroke-linecap="round" opacity="0.85"/>
+
+  <!-- title -->
+  <text x="352" y="158" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="76" font-weight="700" fill="#f8fafc" letter-spacing="-1.5">NutriPal</text>
+  <text x="672" y="158" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="76" font-weight="300" fill="url(#accent)" letter-spacing="-1.5">MCP</text>
+
+  <text x="356" y="204" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="24" fill="#94a3b8">Your MyFitnessPal diary, food log, water and weight — in any MCP client</text>
+
+  <!-- pills -->
+  <g font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="600">
+    <rect x="356" y="232" width="92" height="34" rx="17" fill="#14532d" fill-opacity="0.55" stroke="#22c55e" stroke-opacity="0.5"/>
+    <text x="402" y="255" fill="#86efac" text-anchor="middle">Bun</text>
+
+    <rect x="460" y="232" width="112" height="34" rx="17" fill="#0b3a52" fill-opacity="0.55" stroke="#38bdf8" stroke-opacity="0.5"/>
+    <text x="516" y="255" fill="#7dd3fc" text-anchor="middle">TypeScript</text>
+
+    <rect x="584" y="232" width="176" height="34" rx="17" fill="#1e293b" fill-opacity="0.6" stroke="#64748b" stroke-opacity="0.5"/>
+    <text x="672" y="255" fill="#cbd5e1" text-anchor="middle">stdio transport</text>
+
+    <rect x="772" y="232" width="184" height="34" rx="17" fill="#1e293b" fill-opacity="0.6" stroke="#64748b" stroke-opacity="0.5"/>
+    <text x="864" y="255" fill="#cbd5e1" text-anchor="middle">25 tools · v0.1.0</text>
+  </g>
+</svg>

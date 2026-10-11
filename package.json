@@ -1,0 +1,45 @@
+{
+  "name": "nutripal-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for MyFitnessPal: read your food diary, search foods, log meals, water and weight from any MCP client.",
+  "module": "src/server.ts",
+  "type": "module",
+  "license": "MIT",
+  "author": "Naoufal Elbani",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "myfitnesspal",
+    "nutrition",
+    "food-diary",
+    "calorie-tracker",
+    "bun",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/naoufalelbani/nutripal-mcp.git"
+  },
+  "homepage": "https://github.com/naoufalelbani/nutripal-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/naoufalelbani/nutripal-mcp/issues"
+  },
+  "private": true,
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "auth": "bun run src/auth.ts",
+    "live-check": "bun run src/live-check.ts",
+    "log-by-weight": "bun run src/log-by-weight.ts",
+    "diagnose": "bun run src/diagnose.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
+    "zod": "^4.6.6"
+  }
+}

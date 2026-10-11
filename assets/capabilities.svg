@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="440" viewBox="0 0 1120 440" role="img" aria-label="NutriPal MCP capabilities">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#0d1526"/>
+    </linearGradient>
+    <style>
+      .t { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      .m { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1120" height="440" rx="20" fill="url(#bg2)"/>
+  <rect x="1" y="1" width="1118" height="438" rx="20" fill="none" stroke="#1f2b45" stroke-width="2"/>
+
+  <text class="t" x="40" y="54" font-size="14" font-weight="700" fill="#64748b" letter-spacing="2">WHAT YOU CAN DO FROM CHAT</text>
+
+  <!-- card 1 -->
+  <g>
+    <rect x="40" y="80" width="330" height="150" rx="14" fill="#111c31" stroke="#334155" stroke-width="1.5"/>
+    <circle cx="72" cy="112" r="15" fill="#14532d"/><text class="t" x="72" y="118" font-size="15" fill="#86efac" text-anchor="middle" font-weight="700">1</text>
+    <text class="t" x="100" y="118" font-size="18" font-weight="700" fill="#e2e8f0">Read your diary</text>
+    <text class="t" x="64" y="152" font-size="14" fill="#94a3b8">Any single day or up to 31 days at once,</text>
+    <text class="t" x="64" y="173" font-size="14" fill="#94a3b8">plus daily notes, nutrition goals and</text>
+    <text class="t" x="64" y="194" font-size="14" fill="#94a3b8">diary settings.</text>
+    <text class="m" x="64" y="216" font-size="12.5" fill="#4ade80">get_diary · get_diary_range · get_daily_note</text>
+  </g>
+
+  <!-- card 2 -->
+  <g>
+    <rect x="395" y="80" width="330" height="150" rx="14" fill="#111c31" stroke="#334155" stroke-width="1.5"/>
+    <circle cx="427" cy="112" r="15" fill="#0b3a52"/><text class="t" x="427" y="118" font-size="15" fill="#7dd3fc" text-anchor="middle" font-weight="700">2</text>
+    <text class="t" x="455" y="118" font-size="18" font-weight="700" fill="#e2e8f0">Find exact foods</text>
+    <text class="t" x="419" y="152" font-size="14" fill="#94a3b8">Search the catalog, open serving sizes,</text>
+    <text class="t" x="419" y="173" font-size="14" fill="#94a3b8">or list your own private foods. Tools</text>
+    <text class="t" x="419" y="194" font-size="14" fill="#94a3b8">never guess among matches.</text>
+    <text class="m" x="419" y="216" font-size="12.5" fill="#4ade80">search_food · get_food · list_my_foods</text>
+  </g>
+
+  <!-- card 3 -->
+  <g>
+    <rect x="750" y="80" width="330" height="150" rx="14" fill="#111c31" stroke="#334155" stroke-width="1.5"/>
+    <circle cx="782" cy="112" r="15" fill="#3b1d5c"/><text class="t" x="782" y="118" font-size="15" fill="#d8b4fe" text-anchor="middle" font-weight="700">3</text>
+    <text class="t" x="810" y="118" font-size="18" font-weight="700" fill="#e2e8f0">Log &amp; correct entries</text>
+    <text class="t" x="774" y="152" font-size="14" fill="#94a3b8">Log a serving, fix the count later, or</text>
+    <text class="t" x="774" y="173" font-size="14" fill="#94a3b8">delete it. Create a custom food and</text>
+    <text class="t" x="774" y="194" font-size="14" fill="#94a3b8">log it in one call.</text>
+    <text class="m" x="774" y="216" font-size="12.5" fill="#4ade80">log_food · update_diary_entry · create_food</text>
+  </g>
+
+  <!-- card 4 -->
+  <g>
+    <rect x="40" y="252" width="330" height="150" rx="14" fill="#111c31" stroke="#334155" stroke-width="1.5"/>
+    <circle cx="72" cy="284" r="15" fill="#14532d"/><text class="t" x="72" y="290" font-size="15" fill="#86efac" text-anchor="middle" font-weight="700">4</text>
+    <text class="t" x="100" y="290" font-size="18" font-weight="700" fill="#e2e8f0">Build your shortcuts</text>
+    <text class="t" x="64" y="324" font-size="14" fill="#94a3b8">Recent and frequent foods are computed</text>
+    <text class="t" x="64" y="345" font-size="14" fill="#94a3b8">from your real diary history, not a cache.</text>
+    <text class="m" x="64" y="388" font-size="12.5" fill="#4ade80">list_recent_foods · list_my_meals · get_food_settings</text>
+  </g>
+
+  <!-- card 5 -->
+  <g>
+    <rect x="395" y="252" width="330" height="150" rx="14" fill="#111c31" stroke="#334155" stroke-width="1.5"/>
+    <circle cx="427" cy="284" r="15" fill="#0b3a52"/><text class="t" x="427" y="290" font-size="15" fill="#7dd3fc" text-anchor="middle" font-weight="700">5</text>
+    <text class="t" x="455" y="290" font-size="18" font-weight="700" fill="#e2e8f0">Water &amp; body metrics</text>
+    <text class="t" x="419" y="324" font-size="14" fill="#94a3b8">Read or set water in cups or millilitres,</text>
+    <text class="t" x="419" y="345" font-size="14" fill="#94a3b8">read measurements and log weight in</text>
+    <text class="t" x="419" y="366" font-size="14" fill="#94a3b8">kg or lbs.</text>
+    <text class="m" x="419" y="388" font-size="12.5" fill="#4ade80">get_water · log_water · log_weight</text>
+  </g>
+
+  <!-- card 6 -->
+  <g>
+    <rect x="750" y="252" width="330" height="150" rx="14" fill="#0f2318" stroke="#22c55e" stroke-width="1.5"/>
+    <circle cx="782" cy="284" r="15" fill="#14532d"/><text class="t" x="782" y="290" font-size="15" fill="#86efac" text-anchor="middle" font-weight="700">6</text>
+    <text class="t" x="810" y="290" font-size="18" font-weight="700" fill="#86efac">Verify before you trust it</text>
+    <text class="t" x="774" y="324" font-size="14" fill="#a7f3d0">A session check, a dry-run write test</text>
+    <text class="t" x="774" y="345" font-size="14" fill="#a7f3d0">and a route probe ship as CLI scripts</text>
+    <text class="t" x="774" y="366" font-size="14" fill="#a7f3d0">for when endpoints move.</text>
+    <text class="m" x="774" y="388" font-size="12.5" fill="#4ade80">live-check · diagnose · log-by-weight</text>
+  </g>
+</svg>
