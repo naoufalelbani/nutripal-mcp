@@ -89,4 +89,7 @@ website endpoints over stdio, using your own browser session.
 - Published to npm as [`nutripal-mcp`](https://www.npmjs.com/package/nutripal-mcp) with a
   `nutripal-mcp` bin, so `bunx nutripal-mcp` runs the server without cloning. Invoking it
   under Node.js exits with a message explaining that Bun is required.
+- GitHub Actions workflows: CI runs tests, typecheck and a package dry-run on pushes and pull
+  requests; a release-driven workflow publishes to npm with provenance, skipping versions that
+  are already on the npm registry.
 - MIT license.

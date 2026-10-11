@@ -321,6 +321,30 @@ assets/            # banner and diagrams
 Contributions are welcome. Please run `bun test` and `bun run typecheck` before opening a PR, and
 include a `live-check` result if your change touches an endpoint.
 
+## Releasing
+
+CI runs the tests, typecheck and a package dry-run on every push and pull request.
+
+Publishing to npm is automated. **Create a GitHub Release** and the
+[`Publish to npm`](.github/workflows/publish.yml) workflow publishes the version in `package.json`:
+
+```bash
+# 1. bump "version" in package.json, update CHANGELOG.md, commit
+git commit -am "Release v0.2.0"
+git push
+
+# 2. tag and publish the release
+gh release create v0.2.0 --title "NutriPal MCP v0.2.0" --notes-file CHANGELOG.md
+```
+
+The workflow runs `bun test` and `bun run typecheck` before publishing, skips versions already on
+npm so a re-run is safe, and attaches a [provenance attestation](https://docs.npmjs.com/generating-provenance-statements)
+linking the package back to this commit.
+
+**One-time setup:** add an npm automation token as the `NPM_TOKEN` repository secret
+(Settings -> Secrets and variables -> Actions). Create it at npmjs.com -> Access Tokens ->
+Generate New Token -> **Automation**, so CI can publish without a one-time password.
+
 ## License
 
 [MIT](LICENSE) © Naoufal Elbani
