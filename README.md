@@ -10,6 +10,7 @@
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-555?logo=typescript&logoColor=white" alt="TypeScript" /></a>
   <a href="https://bun.sh/"><img src="https://img.shields.io/badge/runtime-Bun-fbf0df?logo=bun&logoColor=%23000000" alt="Bun" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio-2563eb" alt="MCP stdio" /></a>
+  <a href="https://www.npmjs.com/package/nutripal-mcp"><img src="https://img.shields.io/npm/v/nutripal-mcp?label=npm" alt="npm" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" /></a>
   <a href="https://github.com/naoufalelbani/nutripal-mcp/releases"><img src="https://img.shields.io/github/v/release/naoufalelbani/nutripal-mcp?label=release" alt="Release" /></a>
   <a href="https://github.com/naoufalelbani/nutripal-mcp/actions"><img src="https://img.shields.io/badge/tests-8%20passing-brightgreen" alt="Tests" /></a>
@@ -69,13 +70,24 @@ and nothing leaves your machine except the requests NutriPal makes to MyFitnessP
 
 ### 1. Install
 
+You need [Bun](https://bun.sh/) v1.1 or newer — NutriPal is written in TypeScript and Bun runs it directly.
+
+**One-off, from npm** — no clone needed:
+
+```bash
+bunx nutripal-mcp
+```
+
+**Or clone the repo:**
+
 ```bash
 git clone https://github.com/naoufalelbani/nutripal-mcp.git
 cd nutripal-mcp
 bun install
 ```
 
-You need [Bun](https://bun.sh/) v1.1 or newer.
+> Running the package under Node.js fails on purpose: it loads TypeScript sources and prints a message
+> telling you to switch to Bun.
 
 ### 2. Save your session
 
@@ -110,7 +122,7 @@ Paste the token at the hidden prompt. NutriPal verifies it against your account 
 **Claude Code:**
 
 ```bash
-claude mcp add nutripal -- bun run /absolute/path/to/nutripal-mcp/src/server.ts
+claude mcp add nutripal -- bunx nutripal-mcp
 ```
 
 **Cursor / Windsurf / VS Code** — same shape, in each editor's MCP settings file:
@@ -119,12 +131,14 @@ claude mcp add nutripal -- bun run /absolute/path/to/nutripal-mcp/src/server.ts
 {
   "mcpServers": {
     "nutripal": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/nutripal-mcp/src/server.ts"]
+      "command": "bunx",
+      "args": ["nutripal-mcp"]
     }
   }
 }
 ```
+
+Prefer the cloned repo instead? Swap the command for `"bun"` with `["run", "/absolute/path/to/nutripal-mcp/src/server.ts"]`.
 
 ### 4. Verify
 

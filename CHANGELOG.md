@@ -86,4 +86,7 @@ website endpoints over stdio, using your own browser session.
 
 - 8 unit tests covering session normalization, food ID handling and request paths.
 - `tsc --noEmit` typecheck, TypeScript 7, Bun runtime.
+- Published to npm as [`nutripal-mcp`](https://www.npmjs.com/package/nutripal-mcp) with a
+  `nutripal-mcp` bin, so `bunx nutripal-mcp` runs the server without cloning. Invoking it
+  under Node.js exits with a message explaining that Bun is required.
 - MIT license.

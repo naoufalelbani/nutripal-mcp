@@ -24,7 +24,18 @@
   "bugs": {
     "url": "https://github.com/naoufalelbani/nutripal-mcp/issues"
   },
-  "private": true,
+  "bin": {
+    "nutripal-mcp": "bin/nutripal-mcp.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "assets",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
   "scripts": {
     "start": "bun run src/server.ts",
     "auth": "bun run src/auth.ts",
@@ -32,7 +43,8 @@
     "log-by-weight": "bun run src/log-by-weight.ts",
     "diagnose": "bun run src/diagnose.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun test && bun run typecheck"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
