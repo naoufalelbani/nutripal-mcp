@@ -5,6 +5,27 @@ All notable changes to NutriPal MCP are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-12
+
+Expands account settings and diary coverage, with live compatibility fixes for MyFitnessPal's current API responses.
+
+### Added
+
+- Read account settings, profile, friends, exercise catalog and diary entries, measurement types, and activity summaries.
+- Update nutrition targets, account profile fields, timezone, language, units, diary preferences, and privacy preferences.
+- Read exercise diary entries alongside food diary entries.
+
+### Fixed
+
+- Accept MyFitnessPal's current array response for nutrition goal groups while preserving other goal fields.
+- Normalize cookie values copied as a cookie name followed by a space and token.
+- Expand the read-only live check to cover account, profile, friends, exercise, measurements, and activity summaries.
+
+### Limitations
+
+- MyFitnessPal website actions without verified API support remain unavailable, including friend requests/invites, messaging, recipe management, exercise logging, and report exports.
+- Food search may require a fresh browser session when MyFitnessPal redirects automated requests.
+
 ## [0.1.1] - 2026-10-11
 
 Fixes the npm binary so the bundled CLI scripts are reachable when installed with `bunx`.

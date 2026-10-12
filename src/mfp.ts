@@ -23,6 +23,9 @@ function normalizeCookie(value: string) {
   const trimmed = value.trim();
   if (!trimmed || /[\r\n]/.test(trimmed)) throw new MfpError("Session cookie is empty or malformed");
   if (trimmed.startsWith(`${TOKEN_NAME}=`) || trimmed.includes(";")) return trimmed;
+  // People often copy the cookie name and value as two space-separated columns
+  // from a cookie viewer. Convert that pair to a valid Cookie header.
+  if (trimmed.startsWith(`${TOKEN_NAME} `)) return `${TOKEN_NAME}=${trimmed.slice(TOKEN_NAME.length + 1)}`;
   return `${TOKEN_NAME}=${trimmed}`;
 }
 
@@ -119,13 +122,229 @@ export class MfpClient {
   delete(path: string) { return this.request(path, { method: "DELETE" }, true); }
 
   async account() {
-    const account = await this.get("/api/auth/session");
-    if (!account || typeof account !== "object" || !Object.keys(account).length || (account as any).user === null) {
+    const account = await this.get("/api/services/users") as any;
+    if (!account || typeof account !== "object" || account.id === undefined) {
       throw new MfpError("MyFitnessPal session is empty or expired");
     }
     return { authenticated: true };
   }
-  async diary(date: string) { return this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=diary_meal%2Cfood_entry`); }
+  async myProfile() {
+    const profile = await this.get("/api/services/diary/profile") as any;
+    const personal = profile?.profiles?.find((entry: any) => entry?.type === "user") ?? {};
+    const birthdate = typeof personal.birthdate === "string" ? new Date(`${personal.birthdate}T00:00:00Z`) : undefined;
+    const now = new Date();
+    const age = birthdate && !Number.isNaN(birthdate.valueOf())
+      ? now.getUTCFullYear() - birthdate.getUTCFullYear() -
+        ((now.getUTCMonth() < birthdate.getUTCMonth() ||
+          (now.getUTCMonth() === birthdate.getUTCMonth() && now.getUTCDate() < birthdate.getUTCDate())) ? 1 : 0)
+      : undefined;
+    return {
+      username: profile?.username,
+      profile_image_url: personal.main_image_url,
+      age,
+      sex: personal.sex,
+      member_since: profile?.created_at,
+      about_me: personal.about || "I haven't filled this out yet.",
+      why_i_want_to_get_in_shape: personal.why || "I haven't filled this out yet.",
+      inspirations: personal.inspirations?.length ? personal.inspirations : "I haven't filled this out yet.",
+      friends_count: profile?.friends_count ?? profile?.friends?.length ?? 0,
+      friends: profile?.friends ?? [],
+    };
+  }
+  async myFriends() {
+    const profile = await this.get("/api/services/diary/profile") as any;
+    if (!Array.isArray(profile?.friends)) throw new MfpError("MyFitnessPal did not return your friends list");
+    return { friends_count: profile.friends_count ?? profile.friends.length, friends: profile.friends };
+  }
+  async accountSettings() {
+    const [account, profile, diary, goals] = await Promise.all([
+      this.get("/api/services/users"),
+      this.get("/api/services/diary/profile"),
+      this.get("/api/services/account/diary_settings"),
+      this.get("/api/services/nutrient-goals"),
+    ]);
+    return { account, profile, diary_settings: diary, nutrition_goals: goals };
+  }
+  async updatePrivacyPreferences(changes: { friend_visibility?: boolean; diary_visibility?: string;
+    profile_visibility?: string; yir_visibility?: string; age_visibility?: string }) {
+    if (!Object.keys(changes).length) throw new MfpError("Provide at least one privacy preference to change");
+    const current = await this.get("/api/services/diary/profile") as any;
+    const existing = current?.privacy_preferences;
+    if (!existing || typeof existing !== "object") throw new MfpError("MyFitnessPal returned unsupported privacy settings");
+    const updated = { ...existing, ...changes };
+    await this.patch("/api/services/users", { item: { privacy_preferences: updated } });
+    const verified = await this.get("/api/services/diary/profile") as any;
+    if (!verified?.privacy_preferences || Object.entries(changes).some(([key, value]) => verified.privacy_preferences[key] !== value)) {
+      throw new MfpError("MyFitnessPal accepted the privacy update but did not save every requested setting");
+    }
+    return { updated: true, privacy_preferences: verified.privacy_preferences };
+  }
+  async updateNutritionGoals(changes: { calories?: number; protein?: number; carbohydrates?: number; fat?: number;
+    fiber?: number; sugar?: number; sodium?: number; saturated_fat?: number; cholesterol?: number;
+    potassium?: number; vitamin_a?: number; vitamin_c?: number; calcium?: number; iron?: number }) {
+    const nutrients = Object.fromEntries(Object.entries(changes).filter(([key, value]) => key !== "calories" && value !== undefined));
+    if (changes.calories === undefined && !Object.keys(nutrients).length) {
+      throw new MfpError("Provide at least one calorie or nutrient target to update");
+    }
+    const current = await this.get("/api/services/nutrient-goals") as any;
+    // The API currently returns an array of goal groups, while older responses
+    // used an { item } envelope. Keep the original wire shape for the update.
+    const wrapped = !Array.isArray(current) && Array.isArray(current?.item);
+    const groups = Array.isArray(current) ? current : Array.isArray(current?.item) ? current.item
+      : current?.item && typeof current.item === "object" ? [current.item]
+      : current && typeof current === "object" ? [current] : [];
+    if (!groups.length || groups.some((group: any) => !Array.isArray(group?.daily_goals) || !group?.default_goal)) {
+      throw new MfpError("MyFitnessPal returned an unsupported nutrition goals response");
+    }
+    const updateGoal = (goal: any) => ({
+      ...goal,
+      ...(changes.calories !== undefined ? { energy: { ...(goal.energy ?? {}), value: String(changes.calories), unit: goal.energy?.unit ?? "calories" } } : {}),
+      ...nutrients,
+    });
+    const updateGroup = (group: any) => ({
+      ...group,
+      daily_goals: group.daily_goals.map(updateGoal),
+      default_goal: updateGoal(group.default_goal),
+    });
+    const updatedGroups = groups.map(updateGroup);
+    const updated = Array.isArray(current) ? updatedGroups : wrapped ? { item: updatedGroups }
+      : current?.item && typeof current.item === "object" ? { item: updateGroup(current.item) }
+      : updateGroup(current);
+    await this.post("/api/services/nutrient-goals", updated);
+    const verifiedResponse = await this.get("/api/services/nutrient-goals") as any;
+    const verifiedGroups = Array.isArray(verifiedResponse) ? verifiedResponse
+      : Array.isArray(verifiedResponse?.item) ? verifiedResponse.item
+      : [verifiedResponse?.item ?? verifiedResponse];
+    const goals = verifiedGroups.flatMap((group: any) => [...(group?.daily_goals ?? []), group?.default_goal].filter(Boolean));
+    if (!goals.length || goals.some((goal: any) =>
+      (changes.calories !== undefined && Number(goal.energy?.value) !== changes.calories) ||
+      Object.entries(nutrients).some(([key, value]) => Number(goal[key]) !== value))) {
+      throw new MfpError("MyFitnessPal accepted the goal update but did not save all requested targets");
+    }
+    return { updated: true, changes,
+      daily_goals: verifiedGroups.flatMap((group: any) => group?.daily_goals ?? []),
+      default_goal: verifiedGroups.map((group: any) => group?.default_goal).filter(Boolean) };
+  }
+  async updateAccountProfile(changes: {
+    username?: string; timezone?: string; language?: string;
+    location?: { country_code?: string; state?: string | null; city?: string | null; postal_code?: string | null };
+    units?: { energy?: string; weight?: string; distance?: string; height?: string; water?: string };
+    profile?: { birthdate?: string; sex?: string; height?: { value: number; unit: string }; activity_factor?: string;
+      headline?: string | null; about?: string | null; why?: string | null; inspirations?: string[] };
+  }) {
+    const current = await this.get("/api/services/diary/profile") as any;
+    if (!current || typeof current !== "object") throw new MfpError("MyFitnessPal returned an unsupported profile response");
+    const updated = structuredClone(current);
+    if (changes.timezone !== undefined) updated.location_preferences.time_zone = changes.timezone;
+    if (changes.language !== undefined) updated.location_preferences.locale = changes.language;
+    if (changes.location) updated.location_preferences = { ...updated.location_preferences, ...changes.location };
+    if (changes.units) updated.unit_preferences = { ...updated.unit_preferences, ...changes.units };
+    if (changes.profile) {
+      const index = Array.isArray(updated.profiles) ? updated.profiles.findIndex((entry: any) => entry.type === "user") : -1;
+      if (index < 0) throw new MfpError("MyFitnessPal did not return an editable user profile");
+      updated.profiles[index] = { ...updated.profiles[index], ...changes.profile };
+    }
+    const userUpdate: Record<string, unknown> = {};
+    if (changes.username !== undefined) userUpdate.username = changes.username;
+    if (changes.timezone !== undefined || changes.language !== undefined || changes.location) userUpdate.location_preferences = updated.location_preferences;
+    if (changes.units) userUpdate.unit_preferences = updated.unit_preferences;
+    if (changes.profile) userUpdate.profiles = updated.profiles;
+    await this.patch("/api/services/users", { item: userUpdate });
+    const verified = await this.get("/api/services/diary/profile") as any;
+    const expected: Record<string, unknown> = {};
+    if (changes.username !== undefined) expected.username = changes.username;
+    if (changes.timezone !== undefined) expected.time_zone = changes.timezone;
+    if (changes.language !== undefined) expected.locale = changes.language;
+    if (changes.location) expected.location = changes.location;
+    if (changes.units) expected.units = changes.units;
+    for (const [key, value] of Object.entries(expected)) {
+      const actual = key === "username" ? verified.username
+        : key === "time_zone" || key === "locale" ? verified.location_preferences?.[key]
+        : key === "location" ? verified.location_preferences
+        : verified.unit_preferences;
+      const matches = key === "units"
+        ? Object.entries(value as Record<string, string>).every(([unit, setting]) => actual?.[unit] === setting)
+        : key === "location"
+        ? Object.entries(value as Record<string, unknown>).every(([field, setting]) => actual?.[field] === setting)
+        : actual === value;
+      if (!matches) throw new MfpError(`MyFitnessPal accepted the profile update but did not save ${key}`);
+    }
+    if (changes.profile) {
+      const savedProfile = verified.profiles?.find((entry: any) => entry.type === "user");
+      if (!savedProfile || Object.entries(changes.profile).some(([key, value]) => JSON.stringify(savedProfile[key]) !== JSON.stringify(value))) {
+        throw new MfpError("MyFitnessPal accepted the profile update but did not save all requested diet/fitness fields");
+      }
+    }
+    return { updated: true, username: verified.username, location_preferences: verified.location_preferences,
+      unit_preferences: verified.unit_preferences, profile: verified.profiles?.find((entry: any) => entry.type === "user") };
+  }
+  async updateDiarySettings(changes: { meal_names?: string[]; tracked_nutrients?: string[]; preference?: Record<string, unknown> }) {
+    if (!changes.meal_names && !changes.tracked_nutrients && !changes.preference) throw new MfpError("Provide at least one diary setting to change");
+    const current = await this.get("/api/services/account/diary_settings") as any;
+    if (!current || typeof current !== "object") throw new MfpError("MyFitnessPal returned unsupported diary settings");
+    const updated = {
+      ...current,
+      ...(changes.meal_names ? { meal_names: changes.meal_names.map((description, index) => ({ position: index + 1, description })) } : {}),
+      ...(changes.tracked_nutrients ? { tracked_nutrients: changes.tracked_nutrients.map((field_name, index) => {
+        const existing = current.tracked_nutrients?.find((entry: any) => entry.field_name === field_name);
+        if (!existing) throw new MfpError(`Nutrient '${field_name}' is not available in the current diary settings`);
+        return { ...existing, position: index + 1 };
+      }) } : {}),
+      ...(changes.preference ? { preference: { ...current.preference, ...changes.preference } } : {}),
+    };
+    await this.post("/api/services/account/diary_settings", updated);
+    const verified = await this.get("/api/services/account/diary_settings") as any;
+    if (changes.meal_names && JSON.stringify(verified.meal_names?.map((entry: any) => entry.description)) !== JSON.stringify(changes.meal_names)) {
+      throw new MfpError("MyFitnessPal accepted the diary settings update but did not save meal names");
+    }
+    if (changes.tracked_nutrients && JSON.stringify(verified.tracked_nutrients?.map((entry: any) => entry.field_name)) !== JSON.stringify(changes.tracked_nutrients)) {
+      throw new MfpError("MyFitnessPal accepted the diary settings update but did not save tracked nutrients");
+    }
+    if (changes.preference && Object.entries(changes.preference).some(([key, value]) => verified.preference?.[key] !== value)) {
+      throw new MfpError("MyFitnessPal accepted the diary settings update but did not save all requested preferences");
+    }
+    return { updated: true, settings: verified };
+  }
+  async diary(date: string) { return this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=diary_meal%2Cfood_entry%2Cexercise_entry`); }
+  async exerciseDiary(date: string) {
+    const entries = await this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=exercise_entry`);
+    if (!Array.isArray(entries)) throw new MfpError("MyFitnessPal changed its exercise diary response");
+    return entries;
+  }
+  async liveDigest(from: string, to: string) {
+    const start = Date.parse(`${from}T00:00:00Z`);
+    const end = Date.parse(`${to}T00:00:00Z`);
+    const days = Math.round((end - start) / 86_400_000) + 1;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || days < 1 || days > 31) {
+      throw new MfpError("Summary range must contain 1 to 31 days");
+    }
+    return this.get(`/api/services/live-digest?from-date=${encodeURIComponent(from)}&to-date=${encodeURIComponent(to)}`);
+  }
+  async searchExercises(query: string) {
+    const response = await this.get(`/api/services/exercises/search?search=${encodeURIComponent(query)}`) as any;
+    if (!Array.isArray(response?.exercises)) throw new MfpError("MyFitnessPal changed its exercise search response");
+    return response.exercises;
+  }
+  async exercises() {
+    const response = await this.get("/api/services/exercises/lookup") as any;
+    if (!Array.isArray(response?.exercises)) throw new MfpError("MyFitnessPal changed its exercise catalog response");
+    return response.exercises;
+  }
+  async exercise(id: string) { return this.get(`/api/services/exercises/lookup/${encodeURIComponent(id)}`); }
+  async ownExercises() {
+    const response = await this.get("/api/services/exercises/lookup_private");
+    if (!Array.isArray(response)) throw new MfpError("MyFitnessPal changed its private exercises response");
+    return response;
+  }
+  async measurementTypes() {
+    const response = await this.get("/api/user-measurements/measurements/types");
+    if (!Array.isArray(response)) throw new MfpError("MyFitnessPal changed its measurement types response");
+    return response;
+  }
+  async deleteMeasurement(id: string) {
+    await this.delete(`/api/user-measurements/measurements/${encodeURIComponent(id)}`);
+    return { deleted: true, measurement_id: id };
+  }
   async topFoods(from: string, to: string, list: "recent" | "frequent") {
     const start = Date.parse(`${from}T00:00:00Z`);
     const end = Date.parse(`${to}T00:00:00Z`);

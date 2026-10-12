@@ -141,7 +141,58 @@ test("diary read requests both meal totals and food entries", async () => {
     return Response.json([]);
   }) as typeof fetch;
   await new MfpClient().diary("2026-10-11");
-  expect(path).toBe("/api/services/diary/read_diary?date=2026-10-11&types=diary_meal%2Cfood_entry");
+  expect(path).toBe("/api/services/diary/read_diary?date=2026-10-11&types=diary_meal%2Cfood_entry%2Cexercise_entry");
+});
+
+test("nutrition goal update preserves other fields and verifies saved targets", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  const weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const initialGoal = (day_of_week: string) => ({ day_of_week, group_id: 0,
+    energy: { value: "1790", unit: "calories" }, protein: 89, carbohydrates: 200, fat: 60,
+    assign_exercise_energy: "nutrient_goal" });
+  let saved: any;
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    const json = (value: unknown) => Response.json(value);
+    if (path === "/api/auth/csrf") return json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/nutrient-goals" && init?.method === "POST") {
+      saved = JSON.parse(String(init.body)).item;
+      return json({ item: saved });
+    }
+    if (path === "/api/services/nutrient-goals") {
+      return json({ item: saved ?? { valid_from: "2026-01-01",
+        daily_goals: weekdays.map(initialGoal), default_goal: initialGoal("default") } });
+    }
+    throw new Error(`Unexpected path ${path}`);
+  }) as typeof fetch;
+
+  const result = await new MfpClient().updateNutritionGoals({ calories: 1450, protein: 130 });
+  expect(saved.daily_goals).toHaveLength(7);
+  expect(saved.daily_goals[0]).toMatchObject({ energy: { value: "1450", unit: "calories" }, protein: 130,
+    carbohydrates: 200, fat: 60, assign_exercise_energy: "nutrient_goal" });
+  expect(result.updated).toBe(true);
+  expect(result.daily_goals.every((goal: any) => goal.energy.value === "1450" && goal.protein === 130)).toBe(true);
+});
+
+test("timezone update preserves profile fields and verifies the saved timezone", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  let profile: any = { id: "user-1", username: "sample", location_preferences: { time_zone: "UTC", country_code: "MA" },
+    unit_preferences: { weight: "kilograms" }, profiles: [{ type: "user" }] };
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/users" && init?.method === "PATCH") {
+      const changes = JSON.parse(String(init.body)).item;
+      profile = { ...profile, ...changes };
+      return Response.json({ item: profile });
+    }
+    if (path === "/api/services/diary/profile") return Response.json(profile);
+    throw new Error(`Unexpected path ${path}`);
+  }) as typeof fetch;
+
+  const result = await new MfpClient().updateAccountProfile({ timezone: "Africa/Casablanca" });
+  expect(profile.location_preferences).toEqual({ time_zone: "Africa/Casablanca", country_code: "MA" });
+  expect(result.updated).toBe(true);
 });
 
 test("recent foods are derived from diary entries", async () => {

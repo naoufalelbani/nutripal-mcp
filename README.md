@@ -166,11 +166,26 @@ server runs — MCP messages own it, so errors go to stderr.
 | Tool | Access | Action |
 | --- | :---: | --- |
 | `check_session` | read | Check whether the saved MyFitnessPal session works |
+| `get_account_settings` | read | Read account, profile, diary, privacy, units, and nutrition goal settings |
+| `get_my_profile` | read | Read your profile details and friend count |
+| `update_privacy_settings` | write | Change profile, diary, age, and friend visibility preferences |
+| `list_my_friends` | read | Read the friends list returned by your profile |
+| `get_friends_page` | read | Return the Friends and invite links for browser-based friend management |
 | `get_diary` | read | Read food diary entries for a date |
+| `get_exercise_diary` | read | Read exercise and step-adjustment entries for a date |
 | `get_diary_range` | read | Read diary data across a date range of up to 31 days |
 | `get_daily_note` | read | Read the food diary note for a date |
 | `get_nutrition_goals` | read | Read current account nutrition goals |
+| `get_activity_summary` | read | Read diary, exercise, step, water, and nutrition summaries for up to 31 days |
+| `update_nutrition_goals` | write | Update daily calorie, macro, and supported nutrient targets across all weekdays |
+| `update_account_profile` | write | Change username, time zone, language, units, and supported diet/fitness profile fields |
+| `update_my_profile` | write | Edit location, birth date, sex, height, activity level, headline, About Me, goals, and inspirations |
+| `update_diary_settings` | write | Change meal names, tracked nutrients, and diary display/privacy preferences |
 | `search_food` | read | Search the food catalog and return exact IDs and serving options |
+| `search_exercises` | read | Search the exercise catalog |
+| `list_exercises` | read | List the exercise catalog |
+| `get_exercise` | read | Read one exercise by ID |
+| `list_my_exercises` | read | List private exercises in your account |
 | `get_food` | read | Read nutrition and serving sizes for a food ID |
 | `list_my_foods` | read | Find foods you created, including private foods |
 | `list_my_meals` | read | List meals saved in My Meals |
@@ -178,6 +193,7 @@ server runs — MCP messages own it, so errors go to stderr.
 | `get_food_settings` | read | Read food diary settings, including meal labels |
 | `get_water` | read | Read water logged on a date |
 | `get_measurements` | read | Read body measurements such as weight |
+| `get_measurement_types` | read | List available body measurement types |
 | `create_food` | write | Save a private custom food with calories, macros and optional nutrients |
 | `update_my_food` | write | Edit a private food by exact ID — only supplied fields change |
 | `delete_my_food` | write | Delete a private food by exact ID |
@@ -188,6 +204,7 @@ server runs — MCP messages own it, so errors go to stderr.
 | `delete_my_meal` | write | Delete a saved meal by exact ID |
 | `log_water` | write | Set water intake for a date, in cups or milliliters |
 | `log_weight` | write | Create or update a weight measurement for a date |
+| `delete_measurement` | write | Delete a body measurement by exact ID |
 
 Meals are addressed by position: `0` breakfast, `1` lunch, `2` dinner, `3` snacks, and `4`/`5` for extra
 meals if you enabled them. Use `get_food_settings` to read your own labels. Dates are always `YYYY-MM-DD`.
@@ -221,14 +238,18 @@ MyFitnessPal's website endpoints can change without notice.
 
 | MyFitnessPal page | Current MCP support |
 | --- | --- |
-| Food Diary | Read days, log foods, change serving counts, delete entries, read notes, read or set water |
+| Food Diary | Read food and exercise entries, log foods, change food servings, delete entries, read notes, read or set water |
 | Database | Search foods and view nutrition and serving sizes |
 | My Foods | Search/list, view, create, edit, and delete private foods |
 | My Meals | List and delete saved meals |
+| Exercise | Search and view public and private exercise catalog entries; read and delete exercise diary entries; logging exercise is not yet supported by a verified write endpoint |
+| Friends | Read the profile-provided friends list and return the Friends/invite links; friend requests and activity feed are not exposed by the routes checked so far |
 | Recipes | No recipe tools yet |
-| Settings | Read diary settings and nutrition goals |
+| Settings | Read diary settings and nutrition goals; update nutrition goals, account profile, and diary settings |
+| Reports | Read MyFitnessPal activity digest for a date range up to 31 days |
+| Data export | Not yet available through the MCP |
 
-My Meals creation and logging, recipe management and changing food settings still require the
+My Meals creation and logging, recipe management, exercise diary logging, and other food setting changes still require the
 MyFitnessPal website or app.
 
 ## Custom foods

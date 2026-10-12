@@ -15,6 +15,14 @@ if (results.session !== "ok") {
 }
 
 const today = new Date().toISOString().slice(0, 10);
+await run("account_settings", () => client.accountSettings());
+await run("my_profile", () => client.myProfile());
+await run("friends", () => client.myFriends());
+await run("exercise_diary", () => client.exerciseDiary(today));
+await run("exercise_catalog", () => client.exercises());
+await run("private_exercises", () => client.ownExercises());
+await run("measurement_types", () => client.measurementTypes());
+await run("activity_summary", () => client.liveDigest(today, today));
 await run("my_foods", () => client.ownFoods());
 await run("diary", () => client.diary(today));
 await run("food_search", async () => {
