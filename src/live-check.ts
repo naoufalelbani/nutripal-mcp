@@ -69,11 +69,12 @@ if (process.argv.includes("--write")) {
       }
     });
     try {
-      const logged = await client.logFood({ food_id: createdId, date: today, meal_position: 0, servings: 1 });
+      const logged = await client.logFood({ food_id: createdId, date: today, meal_position: 0, servings: 1,
+        serving_value: 2, serving_unit: "g" });
       entryMayExist = true;
       if (logged.diary_entry_id) entryId = logged.diary_entry_id;
       if (!logged.persisted) throw new Error(logged.reason ?? "Diary entry was not persisted");
-      if (logged.serving.servings !== 1 || logged.serving.value !== 1 || logged.serving.unit !== "serving")
+      if (logged.serving.servings !== 1 || Number(logged.serving.value) !== 2 || logged.serving.unit !== "g")
         throw new Error("Logged food returned an unexpected serving");
       if (!entryId) throw new Error("Diary entry was created but returned no ID; check today's diary for the temporary food");
       const saved = unwrapFood(await client.get(`/api/services/diary/${encodeURIComponent(entryId)}`));
