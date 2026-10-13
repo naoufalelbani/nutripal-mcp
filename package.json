@@ -1,8 +1,8 @@
 {
   "name": "nutripal-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for MyFitnessPal account settings, food and exercise diaries, goals, measurements, and nutrition tools.",
-  "module": "src/server.ts",
+  "module": "dist/server.js",
   "type": "module",
   "license": "MIT",
   "author": "Naoufal Elbani",
@@ -30,28 +30,32 @@
   "files": [
     "bin",
     "src",
+    "dist",
     "assets",
     "CHANGELOG.md"
   ],
   "engines": {
-    "bun": ">=1.1.0"
+    "node": ">=20"
   },
   "scripts": {
     "start": "bun run src/server.ts",
+    "build": "bun build src/*.ts --target=node --outdir=dist",
     "auth": "bun run src/auth.ts",
     "live-check": "bun run src/live-check.ts",
     "log-by-weight": "bun run src/log-by-weight.ts",
     "diagnose": "bun run src/diagnose.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun test && bun run typecheck"
+    "prepublishOnly": "bun test && bun run typecheck && bun run build"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
+    "@types/proper-lockfile": "^4.1.4",
     "typescript": "^7.0.2"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",
+    "proper-lockfile": "^4.1.2",
     "zod": "^4.6.6"
   }
 }

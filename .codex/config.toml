@@ -1,0 +1,4 @@
+[mcp_servers.nutripal]
+command = "bun"
+args = ["run", "src/server.ts"]
+supports_parallel_tool_calls = true

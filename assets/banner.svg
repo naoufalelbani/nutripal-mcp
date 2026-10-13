@@ -57,6 +57,6 @@
     <text x="672" y="255" fill="#cbd5e1" text-anchor="middle">stdio transport</text>
 
     <rect x="772" y="232" width="184" height="34" rx="17" fill="#1e293b" fill-opacity="0.6" stroke="#64748b" stroke-opacity="0.5"/>
-    <text x="864" y="255" fill="#cbd5e1" text-anchor="middle">25 tools · v0.2.0</text>
+    <text x="864" y="255" fill="#cbd5e1" text-anchor="middle">41 tools · v0.3.0</text>
   </g>
 </svg>

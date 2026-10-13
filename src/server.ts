@@ -1,11 +1,20 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
-import { MfpClient, MfpError, foodId, type FoodSpec } from "./mfp.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { MfpClient, MfpError, activeProfile, listProfiles, foodId, withProfileWriteLock, type FoodSpec } from "./mfp.ts";
 
-const client = new MfpClient();
-const server = new McpServer({ name: "nutripal-mcp", version: "0.1.0" }, {
-  instructions: "Use search_food or list_my_foods to find a food ID before logging it. Creating a food saves it to MyFitnessPal; it does not log it unless create_and_log_food is called. Dates use YYYY-MM-DD. Nutrition values are per specified serving."
+const context = new AsyncLocalStorage<MfpClient>();
+const clients = new Map<string, MfpClient>();
+const writeTails = new Map<string, Promise<unknown>>();
+const client = new Proxy({} as MfpClient, { get(_target, key) {
+  const current = context.getStore();
+  if (!current) throw new Error("No active MyFitnessPal profile");
+  const value = Reflect.get(current, key);
+  return typeof value === "function" ? value.bind(current) : value;
+} });
+const server = new McpServer({ name: "nutripal-mcp", version: "0.3.0" }, {
+  instructions: "Use search_food or list_my_foods to find a food ID before logging it. Creating a food saves it to MyFitnessPal; it does not log it unless create_and_log_food is called. Dates use YYYY-MM-DD. Nutrition values are per specified serving. Read-only tools may run in parallel within and across profiles. Writes are serialized per profile across server processes; writes to different profiles may run in parallel."
 });
 
 const date = z.iso.date().describe("Diary date in YYYY-MM-DD format");
@@ -17,21 +26,44 @@ const foodFields = {
   brand: z.string().trim().max(100).optional(),
   calories: nonnegative, protein: nonnegative, carbohydrates: nonnegative, fat: nonnegative,
   serving_amount: positive.default(1), serving_unit: z.string().trim().min(1).max(50).default("serving"),
-  country_code: z.string().length(2).default("US").describe("US treats carbohydrates as total carbs; some EU countries treat them as net carbs"),
+  country_code: z.string().length(2).default("US").describe("Catalog locale only; does not change carbohydrate meaning"),
+  carbohydrate_basis: z.enum(["total", "net"]).default("total"),
   fiber: nonnegative.optional(), sugar: nonnegative.optional(), sodium: nonnegative.optional(),
   saturated_fat: nonnegative.optional(), cholesterol: nonnegative.optional(), potassium: nonnegative.optional(),
 };
 const meal = z.number().int().min(0).max(5).describe("Meal position: 0 breakfast, 1 lunch, 2 dinner, 3 snacks, 4/5 extra meals if configured");
 
 function reply(value: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] }; }
-function error(value: unknown) { return { isError: true, content: [{ type: "text" as const,
-  text: value instanceof MfpError ? value.message : "Unexpected error while processing MyFitnessPal data" }] }; }
+function error(value: unknown) {
+  const details = value instanceof MfpError
+    ? { code: value.code, message: value.message, hint: value.hint, status: value.status }
+    : { code: "UPSTREAM_ERROR", message: "Unexpected error while processing MyFitnessPal data" };
+  return { isError: true, structuredContent: details,
+    content: [{ type: "text" as const, text: JSON.stringify(details) }] };
+}
 function register<T extends z.ZodRawShape>(name: string, description: string, shape: T,
   handler: (args: z.infer<z.ZodObject<T>>) => Promise<unknown>, destructive = false) {
-  server.registerTool(name, { description, inputSchema: z.object(shape),
+  server.registerTool(name, { description, inputSchema: z.object({ ...shape,
+    profile: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/).optional().describe("Named MyFitnessPal profile; defaults to MFP_PROFILE or default") }),
     annotations: { readOnlyHint: !destructive, destructiveHint: destructive } },
-  async (args) => { try { return reply(await handler(args as z.infer<z.ZodObject<T>>)); } catch (e) { return error(e); } });
+  async (args) => { try {
+    const { profile: requested, ...toolArgs } = args as Record<string, unknown>;
+    const profile = typeof requested === "string" ? requested : activeProfile();
+    let selected = clients.get(profile);
+    if (!selected) { selected = new MfpClient(undefined, profile); clients.set(profile, selected); }
+    const call = () => context.run(selected, () => handler(toolArgs as z.infer<z.ZodObject<T>>));
+    if (!destructive) return reply(await call());
+    const previous = writeTails.get(profile) ?? Promise.resolve();
+    const result = previous.catch(() => {}).then(() => withProfileWriteLock(profile, call));
+    writeTails.set(profile, result);
+    void result.finally(() => { if (writeTails.get(profile) === result) writeTails.delete(profile); }).catch(() => {});
+    return reply(await result);
+  } catch (e) { return error(e); } });
 }
+
+server.registerTool("list_profiles", { description: "List named profiles, current session validity, and last verification time",
+  inputSchema: z.object({}), annotations: { readOnlyHint: true, destructiveHint: false } },
+  async () => { try { return reply(await listProfiles()); } catch (e) { return error(e); } });
 
 register("check_session", "Check whether the saved MyFitnessPal session works", {}, async () => client.account());
 register("get_my_profile", "Read your MyFitnessPal profile details and friend count", {}, async () => client.myProfile());
@@ -61,12 +93,10 @@ register("get_diary_range", "Read diary data across a date range of up to 31 day
   const end = Date.parse(`${to}T00:00:00Z`);
   const days = Math.round((end - start) / 86_400_000) + 1;
   if (days < 1 || days > 31) throw new MfpError("Date range must contain 1 to 31 days");
-  const entries = [];
-  for (let offset = 0; offset < days; offset++) {
+  return Promise.all(Array.from({ length: days }, (_, offset) => {
     const current = new Date(start + offset * 86_400_000).toISOString().slice(0, 10);
-    entries.push({ date: current, diary: await client.diary(current) });
-  }
-  return entries;
+    return client.diary(current).then((diary) => ({ date: current, diary }));
+  }));
 });
 register("get_daily_note", "Read the food diary note for a date", { date },
   async ({ date }) => client.get(`/api/services/diary/read_notes?date=${encodeURIComponent(date)}&note_type=food`));
@@ -171,7 +201,7 @@ register("list_exercises", "List exercises in the MyFitnessPal exercise catalog"
 register("get_exercise", "Read details for a MyFitnessPal exercise ID", { exercise_id: id },
   async ({ exercise_id }) => client.exercise(exercise_id));
 register("list_my_exercises", "List private exercises in your MyFitnessPal account", {}, async () => client.ownExercises());
-register("get_food", "Read nutrition and serving sizes for a food ID", { food_id: id }, async ({ food_id }) => client.food(food_id));
+register("get_food", "Read nutrition and serving sizes for a food ID", { food_id: id }, async ({ food_id }) => client.foodDetails(food_id));
 register("list_my_foods", "List private foods you created, including foods absent from public search", {
   search: z.string().default("") }, async ({ search }) => client.ownFoods(search));
 register("create_food", "Create a private custom food in your MyFitnessPal account. Nutrition is per serving.", foodFields,
@@ -181,27 +211,35 @@ register("update_my_food", "Edit a private food in My Foods by exact ID. Provide
   name: foodFields.name.optional(), brand: foodFields.brand,
   calories: nonnegative.optional(), protein: nonnegative.optional(), carbohydrates: nonnegative.optional(), fat: nonnegative.optional(),
   serving_amount: positive.optional(), serving_unit: z.string().trim().min(1).max(50).optional(),
-  country_code: z.string().length(2).optional(), fiber: nonnegative.optional(), sugar: nonnegative.optional(),
+  country_code: z.string().length(2).optional(), carbohydrate_basis: z.enum(["total", "net"]).optional(),
+  fiber: nonnegative.optional(), sugar: nonnegative.optional(),
   sodium: nonnegative.optional(), saturated_fat: nonnegative.optional(), cholesterol: nonnegative.optional(), potassium: nonnegative.optional(),
 }, async ({ food_id, ...changes }) => client.updateOwnFood(food_id, changes), true);
 
 register("log_food", "Log an exact food ID and serving to the diary", {
-  food_id: id, date, meal_position: meal, servings: positive.default(1), serving_unit: z.string().optional(),
+  food_id: id, date, meal_position: meal, servings: positive.default(1),
+  serving_size_id: id.optional(), serving_value: positive.optional(), serving_unit: z.string().optional(),
 }, (args) => client.logFood(args), true);
 
 register("create_and_log_food", "Create a private custom food, then log it to the diary. If logging fails, the created food ID is returned for recovery.", {
   ...foodFields, date, meal_position: meal, servings: positive.default(1),
+  serving_size_id: id.optional(), serving_value: positive.optional(),
 }, async (args) => {
   const created = await client.createFood(args as FoodSpec);
   const newId = foodId(created);
-  try { return { created, diary_entry: await client.logFood({ food_id: newId, date: args.date,
-    meal_position: args.meal_position, servings: args.servings }) }; }
-  catch (e) { return { created, diary_error: e instanceof Error ? e.message : "Diary write failed",
+  try { return { created, ...(await client.logFood({ food_id: newId, date: args.date,
+    meal_position: args.meal_position, servings: args.servings,
+    serving_size_id: args.serving_size_id, serving_value: args.serving_value,
+    serving_unit: args.serving_unit })) }; }
+  catch (e) { return { created, persisted: false, entry: null, diary_entry_id: null,
+    code: e instanceof MfpError ? e.code : "UPSTREAM_ERROR", hint: e instanceof MfpError ? e.hint : undefined,
+    reason: e instanceof Error ? e.message : "Diary write failed", diary_error: e instanceof Error ? e.message : "Diary write failed",
     recovery: `The food was created as ID ${newId}. Use log_food with that ID; do not create it again.` }; }
 }, true);
 
 register("update_diary_entry", "Change the serving count of a diary entry by its exact ID", {
-  entry_id: id, servings: positive }, async ({ entry_id, servings }) => client.updateDiaryEntry(entry_id, servings), true);
+  entry_id: id, servings: positive, meal: meal.optional() },
+  async ({ entry_id, servings, meal }) => client.updateDiaryEntry(entry_id, servings, meal), true);
 register("delete_diary_entry", "Delete a diary entry by its exact ID", { entry_id: id },
   async ({ entry_id }) => client.deleteDiaryEntry(entry_id), true);
 register("delete_my_food", "Delete a custom food you own by its exact ID", { food_id: id },

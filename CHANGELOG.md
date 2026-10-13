@@ -5,6 +5,21 @@ All notable changes to NutriPal MCP are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-13
+
+- Add named MyFitnessPal sessions, profile selection on account tools, and live profile status.
+- Resolve serving sizes by ID or amount and unit; preserve diary meals on edits.
+- Record carbohydrate basis for custom foods and expose explicit total and net values.
+- Return structured session errors and verify food logging and diary deletion with a read-back.
+- Build Node.js bundles and prefer them in the package launcher, with Bun source fallback.
+- Serialize profile writes across local server processes; fail with `PROFILE_BUSY` if the lock cannot be acquired.
+- Verify newly created food nutrition before saving carbohydrate basis metadata, invalidate stale metadata, and avoid guessing a diary write from an identical older row.
+- Require release tags to match the npm package version before publishing.
+- Ignore cookies from failed or redirected calls so a website logout redirect cannot poison later API requests in the same server process.
+- Reject malformed diary read-backs instead of falsely confirming a food log or deletion.
+- Exercise the built MCP stdio handshake on both Node 20 and Node 24 in CI.
+- Confirm logged diary rows match the requested food, date, meal, count, and serving; require an explicit date before deleting an entry.
+
 ## [0.2.0] - 2026-10-12
 
 Expands account settings and diary coverage, with live compatibility fixes for MyFitnessPal's current API responses.

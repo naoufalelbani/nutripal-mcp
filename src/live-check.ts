@@ -1,7 +1,10 @@
-import { MfpClient, foodId, unwrapFood } from "./mfp.ts";
+import { MfpClient, activeProfile, validateProfile, foodId, unwrapFood, withProfileWriteLock } from "./mfp.ts";
 
 // Run on a machine that can reach MyFitnessPal. No session value is printed.
-const client = new MfpClient();
+const profileFlag = process.argv.indexOf("--profile");
+if (profileFlag >= 0 && !process.argv[profileFlag + 1]) throw new Error("Usage: live-check [--profile <name>] [--write]");
+const profile = profileFlag >= 0 ? validateProfile(process.argv[profileFlag + 1]!) : activeProfile();
+const client = new MfpClient(undefined, profile, true);
 const results: Record<string, string> = {};
 const run = async (name: string, action: () => Promise<unknown>) => {
   try { await action(); results[name] = "ok"; }
@@ -41,6 +44,7 @@ await run("water", () => client.get(`/api/services/diary/read_water?date=${today
 await run("measurements", () => client.get("/api/user-measurements/measurements"));
 
 if (process.argv.includes("--write")) {
+  await withProfileWriteLock(profile, async () => {
   const name = `NutriPal temporary check ${crypto.randomUUID()}`;
   let createdId: string | undefined;
   let entryId: string | undefined;
@@ -67,8 +71,10 @@ if (process.argv.includes("--write")) {
     try {
       const logged = await client.logFood({ food_id: createdId, date: today, meal_position: 0, servings: 1 });
       entryMayExist = true;
-      const first = Array.isArray(logged) ? logged[0] : (logged as any)?.items?.[0] ?? (logged as any)?.item ?? logged;
-      if (first?.id) entryId = String(first.id);
+      if (logged.diary_entry_id) entryId = logged.diary_entry_id;
+      if (!logged.persisted) throw new Error(logged.reason ?? "Diary entry was not persisted");
+      if (logged.serving.servings !== 1 || logged.serving.value !== 1 || logged.serving.unit !== "serving")
+        throw new Error("Logged food returned an unexpected serving");
       if (!entryId) throw new Error("Diary entry was created but returned no ID; check today's diary for the temporary food");
       const saved = unwrapFood(await client.get(`/api/services/diary/${encodeURIComponent(entryId)}`));
       if (String((saved.food as any)?.id) !== createdId || Number(saved.servings) !== 1) {
@@ -78,7 +84,8 @@ if (process.argv.includes("--write")) {
       await run("update_diary_entry", async () => {
         await client.updateDiaryEntry(entryId!, 2);
         const updated = unwrapFood(await client.get(`/api/services/diary/${encodeURIComponent(entryId!)}`));
-        if (Number(updated.servings) !== 2) throw new Error("Diary edit was accepted but servings did not change");
+        if (Number(updated.servings) !== 2 || Number(updated.meal_position) !== 0)
+          throw new Error("Diary edit did not preserve breakfast and update the serving count");
       });
     } catch (error) {
       results.log_food = error instanceof Error ? error.message : "failed";
@@ -94,7 +101,9 @@ if (process.argv.includes("--write")) {
     }
   } finally {
     if (entryId) {
-      try { await client.deleteDiaryEntry(entryId); results.diary_cleanup = "ok"; entryMayExist = false; }
+      try { const deleted = await client.deleteDiaryEntry(entryId);
+        if (!deleted.persisted) throw new Error(deleted.reason ?? "Diary entry still exists");
+        results.diary_cleanup = "ok"; entryMayExist = false; }
       catch (error) {
         results.diary_cleanup = `failed for entry ID ${entryId}: ${error instanceof Error ? error.message : "unknown error"}`;
       }
@@ -110,6 +119,7 @@ if (process.argv.includes("--write")) {
       results.cleanup = `No food ID returned; search My Foods for '${name}' before retrying`;
     }
   }
+  });
 }
 
 console.log(JSON.stringify(results, null, 2));

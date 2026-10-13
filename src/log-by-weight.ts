@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline/promises";
-import { MfpClient, unwrapFood } from "./mfp.ts";
+import { MfpClient, unwrapFood, withProfileWriteLock } from "./mfp.ts";
 
 const args = process.argv.slice(2);
 const query = args[0];
@@ -58,11 +58,11 @@ const sizes = Array.isArray(details.serving_sizes) ? details.serving_sizes : [];
 const gramSize = sizes.find((size: any) => /^(g|gram|grams)$/i.test(String(size.unit)) && Number(size.value) > 0);
 if (!gramSize) throw new Error("This food has no gram serving size; nothing was logged. Choose another result.");
 const servings = grams / Number(gramSize.value);
-const result = await client.logFood({ food_id: String(chosen.id), date, meal_position: positions[meal]!,
-  servings, serving_unit: String(gramSize.unit) });
-const entry = Array.isArray(result) ? result[0] : (result as any)?.items?.[0] ?? (result as any)?.item ?? result;
-console.log(JSON.stringify({ logged: true, date, meal, food: chosen.name, grams, servings,
-  food_id: chosen.id, entry_id: entry?.id ?? null }, null, 2));
+const result = await withProfileWriteLock(client.profile, () => client.logFood({ food_id: String(chosen.id),
+  date, meal_position: positions[meal]!, servings, serving_unit: String(gramSize.unit) }));
+console.log(JSON.stringify({ logged: result.persisted, date, meal, food: chosen.name, grams, servings,
+  food_id: chosen.id, entry_id: result.diary_entry_id, reason: result.reason }, null, 2));
+if (!result.persisted) process.exitCode = 1;
 
 function localDate() {
   const now = new Date();

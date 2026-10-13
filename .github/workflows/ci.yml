@@ -10,8 +10,11 @@ permissions:
 
 jobs:
   test:
-    name: Test and typecheck
+    name: Test and typecheck (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 24]
 
     steps:
       - name: Check out repository
@@ -25,7 +28,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -35,6 +38,16 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
+
+      - name: Build Node.js output
+        run: bun run build
+
+      - name: Check Node.js launcher
+        run: |
+          node bin/nutripal-mcp.js --help
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' |
+            node bin/nutripal-mcp.js |
+            node -e 'let text = ""; process.stdin.on("data", (chunk) => text += chunk); process.stdin.on("end", () => { const response = JSON.parse(text); if (response.result?.serverInfo?.name !== "nutripal-mcp") process.exit(1); });'
 
       # Fails the build if the published tarball would contain surprises.
       - name: Verify package contents

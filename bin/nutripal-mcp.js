@@ -1,75 +1,42 @@
-#!/usr/bin/env bun
-// Launcher for the `nutripal-mcp` bin.
-//
-// With no arguments it starts the MCP server on stdio, which is what an MCP client expects.
-// Named subcommands run the bundled CLI scripts.
+#!/usr/bin/env node
+import { readFile, access } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-if (typeof Bun === "undefined") {
-  console.error(
-    "NutriPal MCP requires the Bun runtime, but this command was started by another JavaScript runtime.\n\n" +
-      "Fix it in one of these ways:\n" +
-      "  - Install Bun (https://bun.sh) and run: bunx nutripal-mcp auth\n" +
-      "  - Or clone the repo and run: bun run auth\n\n" +
-      "Node.js cannot execute this package because it loads TypeScript sources directly.",
-  );
-  process.exit(1);
-}
-
-const { version } = await Bun.file(new URL("../package.json", import.meta.url)).json();
-
+const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const USAGE = `NutriPal MCP v${version}
 
 Usage:
-  bunx nutripal-mcp                     Start the MCP server on stdio
-  bunx nutripal-mcp auth                Save and verify a MyFitnessPal session cookie
-  bunx nutripal-mcp live-check          Test every read endpoint against your account
-  bunx nutripal-mcp live-check --write  Also test one temporary food and diary write
-  bunx nutripal-mcp log-by-weight <food> <grams> [--date YYYY-MM-DD] [--meal NAME]
-  bunx nutripal-mcp diagnose            Probe food routes and print status codes
-  bunx nutripal-mcp --version           Print the installed version
-  bunx nutripal-mcp --help              Show this message
+  nutripal-mcp                         Start the MCP server on stdio
+  nutripal-mcp auth [--profile NAME]   Verify and save a named session
+  nutripal-mcp live-check [--profile NAME] [--write]
+  nutripal-mcp log-by-weight <food> <grams> [--date YYYY-MM-DD] [--meal NAME]
+  nutripal-mcp diagnose
+  nutripal-mcp --version
+  nutripal-mcp --help
 
-Your MCP client should run \`bunx nutripal-mcp\` with no arguments.
-
-Session: stored at ~/.config/nutripal-mcp/session, or supplied via MFP_COOKIE.
+Sessions: ~/.config/nutripal-mcp/sessions/<profile>. MFP_COOKIE is invocation-only.
 Docs: https://github.com/naoufalelbani/nutripal-mcp`;
 
 const [, , command, ...rest] = process.argv;
-
-// Some scripts read process.argv directly, so drop the subcommand before loading them.
-const scriptArgs = () => { process.argv = [process.argv[0], process.argv[1], ...rest]; };
-
-switch (command) {
-  case undefined:
-  case "serve":
-  case "server":
-    await import("../src/server.ts");
-    break;
-  case "auth":
-    await import("../src/auth.ts");
-    break;
-  case "live-check":
-    scriptArgs();
-    await import("../src/live-check.ts");
-    break;
-  case "diagnose":
-    await import("../src/diagnose.ts");
-    break;
-  case "log-by-weight":
-    scriptArgs();
-    await import("../src/log-by-weight.ts");
-    break;
-  case "--version":
-  case "-v":
-    console.log(version);
-    break;
-  case "--help":
-  case "-h":
-  case "help":
-    console.log(USAGE);
-    break;
-  default:
-    console.error(`Unknown command: ${command}\n`);
-    console.error(USAGE);
-    process.exit(1);
+if (["--version", "-v"].includes(command)) { console.log(version); process.exit(0); }
+if (["--help", "-h", "help"].includes(command)) { console.log(USAGE); process.exit(0); }
+const script = command === undefined || command === "serve" || command === "server" ? "server"
+  : ["auth", "live-check", "log-by-weight", "diagnose"].includes(command) ? command : null;
+if (!script) { console.error(`Unknown command: ${command}\n${USAGE}`); process.exit(1); }
+process.argv = [process.argv[0], process.argv[1], ...rest];
+const built = new URL(`../dist/${script}.js`, import.meta.url);
+try { await access(built); await import(built.href); }
+catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+  const source = new URL(`../src/${script}.ts`, import.meta.url);
+  if (typeof Bun !== "undefined") await import(source.href);
+  else {
+    const child = spawnSync("bun", [fileURLToPath(source), ...rest], { stdio: "inherit" });
+    if (child.error) {
+      console.error("Built JavaScript is missing. Run `bun run build` before using Node, or install Bun for source loading.");
+      process.exit(1);
+    }
+    process.exit(child.status ?? 1);
+  }
 }

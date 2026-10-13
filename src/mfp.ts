@@ -1,22 +1,114 @@
-import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
+import { readFile, writeFile, mkdir, chmod, readdir, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import lockfile from "proper-lockfile";
 
 const BASE = "https://www.myfitnesspal.com";
 const TOKEN_NAME = "__Secure-next-auth.session-token";
-const dataDir = process.env.MFP_DATA_DIR || join(homedir(), ".config", "nutripal-mcp");
+const dataDir = () => process.env.MFP_DATA_DIR || join(homedir(), ".config", "nutripal-mcp");
 
 export class MfpError extends Error {
-  constructor(message: string, readonly status?: number) { super(message); }
+  readonly code: string;
+  readonly hint?: string;
+  constructor(message: string, readonly status?: number, code?: string, hint?: string) {
+    super(message);
+    this.code = code ?? (status === 404 ? "NOT_FOUND" : status === 429 ? "RATE_LIMITED" : "UPSTREAM_ERROR");
+    this.hint = hint;
+  }
 }
 
-export async function saveSession(value: string) {
+export function activeProfile() { return validateProfile(process.env.MFP_PROFILE || "default"); }
+export function validateProfile(profile: string) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profile)) throw new MfpError("Invalid profile name");
+  return profile;
+}
+const sessionPath = (profile: string) => join(dataDir(), "sessions", validateProfile(profile));
+const verifiedPath = (profile: string) => join(dataDir(), "sessions", `${validateProfile(profile)}.verified.json`);
+const foodBasisPath = (profile: string, id: string) => join(dataDir(), "food-basis", validateProfile(profile), `${encodeURIComponent(id)}.json`);
+async function writePrivateFile(file: string, value: string) {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, value, { mode: 0o600 });
+    await rename(temporary, file);
+    await chmod(file, 0o600);
+  } finally { await rm(temporary, { force: true }); }
+}
+type CarbBasis = "total" | "net";
+async function readFoodBasis(profile: string, id: string): Promise<{ basis: CarbBasis; total: number; net: number; fiber: number } | null> {
+  try {
+    const value = JSON.parse(await readFile(foodBasisPath(profile, id), "utf8"));
+    if ((value.basis !== "total" && value.basis !== "net") ||
+      ![value.total, value.net, value.fiber].every((number) => typeof number === "number" && Number.isFinite(number)) ||
+      Math.abs(value.total - value.net - value.fiber) > 0.001) return null;
+    return value;
+  } catch { return null; }
+}
+async function saveFoodBasis(profile: string, id: string, basis: CarbBasis, total: number, fiber: number) {
+  const dir = join(dataDir(), "food-basis", validateProfile(profile));
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writePrivateFile(foodBasisPath(profile, id), JSON.stringify({ basis, total, net: total - fiber, fiber }));
+}
+
+export async function withProfileWriteLock<T>(profile: string, action: () => Promise<T>): Promise<T> {
+  const target = join(dataDir(), "write-locks", validateProfile(profile));
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  let compromised: Error | undefined;
+  let release: () => Promise<void>;
+  try {
+    release = await lockfile.lock(target, { stale: 120_000, update: 30_000,
+      retries: { retries: 120, factor: 1, minTimeout: 500, maxTimeout: 500 },
+      onCompromised: (error) => { compromised = error; } });
+  } catch (error) {
+    throw new MfpError(`Could not acquire the write lock for profile ${profile}: ${error instanceof Error ? error.message : "unknown error"}`,
+      undefined, "PROFILE_BUSY");
+  }
+  try {
+    const result = await action();
+    if (compromised) throw new MfpError(`Write lock for profile ${profile} was lost; reconcile the account before retrying`,
+      undefined, "WRITE_LOCK_LOST");
+    return result;
+  } finally {
+    try { await release(); }
+    catch { throw new MfpError(`Write lock for profile ${profile} could not be released; reconcile the account before retrying`,
+      undefined, "WRITE_LOCK_LOST"); }
+  }
+}
+
+export async function saveSession(value: string, profile = "default") {
   const cookie = normalizeCookie(value);
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  await chmod(dataDir, 0o700);
-  const file = join(dataDir, "session");
-  await writeFile(file, cookie, { mode: 0o600 });
-  await chmod(file, 0o600);
+  const dir = join(dataDir(), "sessions");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dataDir(), 0o700);
+  await chmod(dir, 0o700);
+  const file = sessionPath(profile);
+  await writePrivateFile(file, cookie);
+  await markVerified(profile);
+}
+
+async function markVerified(profile: string) {
+  const dir = join(dataDir(), "sessions");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writePrivateFile(verifiedPath(profile), JSON.stringify({ last_verified: new Date().toISOString() }));
+}
+
+export async function listProfiles() {
+  let names: string[] = [];
+  try { names = (await readdir(join(dataDir(), "sessions"))).filter((name) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)); }
+  catch { /* No named sessions yet. */ }
+  try { await readFile(join(dataDir(), "session")); if (!names.includes("default")) names.push("default"); }
+  catch { /* No legacy session. */ }
+  if (process.env.MFP_COOKIE && !names.includes(activeProfile())) names.push(activeProfile());
+  return Promise.all(names.sort().map(async (profile) => {
+    let last_verified: string | null = null;
+    try { last_verified = JSON.parse(await readFile(verifiedPath(profile), "utf8")).last_verified ?? null; }
+    catch { /* Never verified. */ }
+    let valid = false;
+    try { await new MfpClient(undefined, profile, profile === activeProfile()).account();
+      valid = true; last_verified = new Date().toISOString(); }
+    catch { /* Preserve the prior verification timestamp. */ }
+    return { profile, valid, last_verified };
+  }));
 }
 
 function normalizeCookie(value: string) {
@@ -29,11 +121,19 @@ function normalizeCookie(value: string) {
   return `${TOKEN_NAME}=${trimmed}`;
 }
 
-async function sessionCookie() {
-  const fromEnv = process.env.MFP_COOKIE;
+async function sessionCookie(profile: string, useEnvCookie: boolean) {
+  const fromEnv = useEnvCookie ? process.env.MFP_COOKIE : undefined;
   if (fromEnv) return normalizeCookie(fromEnv);
-  try { return normalizeCookie(await readFile(join(dataDir, "session"), "utf8")); }
-  catch { throw new MfpError("No session. Set MFP_COOKIE or run `bun run auth`."); }
+  try { return normalizeCookie(await readFile(sessionPath(profile), "utf8")); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (profile === "default") {
+      try { return normalizeCookie(await readFile(join(dataDir(), "session"), "utf8")); }
+      catch { /* No legacy session. */ }
+    }
+    throw new MfpError(`No session for profile ${profile}. Re-run auth for profile ${profile}.`, undefined,
+      "MFP_SESSION_STALE", `re-run auth for profile ${profile}`);
+  }
 }
 
 function safeError(body: unknown) {
@@ -59,13 +159,32 @@ function safeError(body: unknown) {
   return found.join("; ");
 }
 
+function diaryRows(value: unknown): any[] {
+  const rows = Array.isArray(value) ? value : (value as any)?.items;
+  if (!Array.isArray(rows)) throw new MfpError("MyFitnessPal returned an unsupported diary response");
+  return rows.map((row: any) => {
+    const item = row?.item ?? row;
+    if (!item || typeof item !== "object")
+      throw new MfpError("MyFitnessPal returned an unsupported diary row");
+    return item;
+  });
+}
+function verifiableDiaryRows(value: unknown): any[] {
+  const rows = diaryRows(value);
+  if (rows.some((item) => item.type !== "diary_meal" && item.id === undefined))
+    throw new MfpError("MyFitnessPal returned a diary row without an ID; persistence cannot be verified");
+  return rows;
+}
+
 export class MfpClient {
   private csrf?: string;
+  private csrfPromise?: Promise<string>;
   private cookies = new Map<string, string>();
-  constructor(private readonly providedCookie?: string) {}
+  constructor(private readonly providedCookie?: string, readonly profile = activeProfile(),
+    private readonly useEnvCookie = profile === activeProfile()) { validateProfile(profile); }
 
   private async cookieHeader() {
-    const base = this.providedCookie ? normalizeCookie(this.providedCookie) : await sessionCookie();
+    const base = this.providedCookie ? normalizeCookie(this.providedCookie) : await sessionCookie(this.profile, this.useEnvCookie);
     return [base, ...[...this.cookies].map(([key, value]) => `${key}=${value}`)].join("; ");
   }
 
@@ -73,7 +192,14 @@ export class MfpClient {
     for (const line of response.headers.getSetCookie()) {
       const pair = line.split(";", 1)[0];
       const separator = pair?.indexOf("=") ?? -1;
-      if (separator > 0) this.cookies.set(pair!.slice(0, separator), pair!.slice(separator + 1));
+      if (separator <= 0) continue;
+      const name = pair!.slice(0, separator);
+      const value = pair!.slice(separator + 1);
+      if (!value || /(?:^|;)\s*max-age=0(?:;|$)/i.test(line)) {
+        this.cookies.delete(name);
+        continue;
+      }
+      this.cookies.set(name, value);
     }
   }
 
@@ -88,11 +214,11 @@ export class MfpClient {
     let response: Response;
     try {
       response = await fetch(BASE + path, { ...init, headers, redirect: "manual", signal: AbortSignal.timeout(30000) });
-    } catch { throw new MfpError("MyFitnessPal request failed. Check your network connection."); }
-    this.rememberCookies(response);
-    if (response.status === 401 || response.status === 403 || (response.status >= 300 && response.status < 400)) {
-      throw new MfpError("MyFitnessPal rejected the session or challenged this client. Refresh the browser session, then run `bun run auth` again.", response.status);
-    }
+    } catch { throw new MfpError("MyFitnessPal request failed. Check your network connection.", undefined, "UPSTREAM_ERROR"); }
+    if (response.status >= 300 && response.status < 400 || response.status === 401 || response.status === 403)
+      throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale`, response.status,
+        "MFP_SESSION_STALE", `re-run auth for profile ${this.profile}`);
+    if (response.ok) this.rememberCookies(response);
     const contentType = response.headers.get("content-type") || "";
     if (response.ok && contentType.includes("html")) {
       throw new MfpError("MyFitnessPal returned a web page instead of API data. Your session may need a browser challenge.", response.status);
@@ -107,12 +233,14 @@ export class MfpClient {
   }
 
   private async csrfToken() {
-    if (!this.csrf) {
+    if (this.csrf) return this.csrf;
+    this.csrfPromise ??= (async () => {
       const result = await this.request("/api/auth/csrf") as { csrfToken?: string };
       if (!result?.csrfToken) throw new MfpError("MyFitnessPal did not provide a CSRF token");
       this.csrf = result.csrfToken;
-    }
-    return this.csrf;
+      return this.csrf;
+    })().finally(() => { this.csrfPromise = undefined; });
+    return this.csrfPromise;
   }
 
   get(path: string) { return this.request(path); }
@@ -126,7 +254,10 @@ export class MfpClient {
     if (!account || typeof account !== "object" || account.id === undefined) {
       throw new MfpError("MyFitnessPal session is empty or expired");
     }
-    return { authenticated: true };
+    if (!this.providedCookie && (!this.useEnvCookie || !process.env.MFP_COOKIE)) {
+      try { await markVerified(this.profile); } catch { /* A metadata write must not invalidate a working session. */ }
+    }
+    return { authenticated: true, profile: this.profile };
   }
   async myProfile() {
     const profile = await this.get("/api/services/diary/profile") as any;
@@ -305,7 +436,9 @@ export class MfpClient {
     }
     return { updated: true, settings: verified };
   }
-  async diary(date: string) { return this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=diary_meal%2Cfood_entry%2Cexercise_entry`); }
+  async diary(date: string) {
+    return diaryRows(await this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=diary_meal%2Cfood_entry%2Cexercise_entry`));
+  }
   async exerciseDiary(date: string) {
     const entries = await this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=exercise_entry`);
     if (!Array.isArray(entries)) throw new MfpError("MyFitnessPal changed its exercise diary response");
@@ -377,25 +510,86 @@ export class MfpClient {
       : (a, b) => b.logs - a.logs || b.last_logged_at.localeCompare(a.last_logged_at));
     return { from, to, list, items };
   }
-  async logFood(args: { food_id: string; date: string; meal_position: number; servings: number; serving_unit?: string }) {
+  async logFood(args: { food_id: string; date: string; meal_position: number; servings: number;
+    serving_size_id?: string; serving_value?: number; serving_unit?: string }) {
     const food = unwrapFood(await this.food(args.food_id));
     const sizes = food.serving_sizes;
     if (!Array.isArray(sizes) || !sizes.length) throw new MfpError("This food has no serving sizes");
-    const chosen = args.serving_unit
-      ? sizes.find((size: any) => String(size.unit).toLowerCase() === args.serving_unit!.toLowerCase())
-      : sizes[0];
-    if (!chosen) throw new MfpError(`Serving unit '${args.serving_unit}' was not found`);
-    return this.post("/api/services/diary", { items: [{ type: "food_entry", date: args.date,
+    const options = sizes.map((size: any) => ({ id: size.id ?? null, value: Number(size.value), unit: String(size.unit) }));
+    const normalize = (value: unknown) => String(value).trim().replace(/\s+/g, " ").toLowerCase();
+    const matches = args.serving_size_id !== undefined
+      ? sizes.filter((size: any) => String(size.id) === args.serving_size_id)
+      : args.serving_value !== undefined
+        ? sizes.filter((size: any) => Number(size.value) === args.serving_value && normalize(size.unit) === normalize(args.serving_unit))
+        : args.serving_unit !== undefined
+          ? sizes.filter((size: any) => normalize(size.unit) === normalize(args.serving_unit)
+            || normalize(`${size.value} ${size.unit}`) === normalize(args.serving_unit))
+          : [sizes[0]];
+    if (matches.length !== 1) throw new MfpError(`Serving selection ${matches.length ? "is ambiguous" : "was not found"}. Valid options: ${JSON.stringify(options)}`,
+      undefined, "INVALID_SERVING");
+    const chosen = matches[0];
+    const submitted = await this.post("/api/services/diary", { items: [{ type: "food_entry", date: args.date,
       food: { id: args.food_id, version: String(food.version ?? args.food_id) }, servings: args.servings,
       meal_position: args.meal_position,
-      serving_size: { unit: chosen.unit, value: chosen.value, nutrition_multiplier: chosen.nutrition_multiplier } }] });
+      serving_size: { unit: chosen.unit, value: chosen.value,
+        nutrition_multiplier: chosen.nutrition_multiplier } }] });
+    const first = Array.isArray(submitted) ? submitted[0] : (submitted as any)?.items?.[0] ?? submitted;
+    const returned = first?.item ?? first;
+    const entryId = returned?.id === undefined ? null : String(returned.id);
+    let rows: any[];
+    try { rows = verifiableDiaryRows(await this.diary(args.date)); }
+    catch (error) {
+      return { persisted: false, entry: null, diary_entry_id: entryId,
+        reason: `Diary read-back failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        code: error instanceof MfpError ? error.code : "UPSTREAM_ERROR",
+        hint: error instanceof MfpError ? error.hint : undefined,
+        serving: { id: chosen.id ?? null, value: chosen.value, unit: chosen.unit, servings: args.servings } };
+    }
+    // Without the created ID an older identical row cannot prove this write persisted.
+    const entry = entryId === null ? null : rows.find((row: any) => row?.type === "food_entry"
+      && String(row.id) === entryId) ?? null;
+    const sameNumber = (left: unknown, right: number) => Number.isFinite(Number(left)) &&
+      Math.abs(Number(left) - right) < 0.000001;
+    const persisted = Boolean(entry && String(entry.food?.id) === args.food_id &&
+      String(entry.date).slice(0, 10) === args.date && Number(entry.meal_position) === args.meal_position &&
+      sameNumber(entry.servings, args.servings) && sameNumber(entry.serving_size?.value, Number(chosen.value)) &&
+      normalize(entry.serving_size?.unit) === normalize(chosen.unit) &&
+      (chosen.id === undefined || chosen.id === null || String(entry.serving_size?.id) === String(chosen.id)));
+    return { persisted, entry, diary_entry_id: entryId,
+      reason: persisted ? null : entry ? "Diary read-back row did not match the submitted food, date, meal, or serving; reconcile before retrying"
+        : entryId === null
+        ? "MyFitnessPal returned no diary entry ID; an identical row cannot confirm this write. Reconcile before retrying"
+        : "Diary read-back did not contain the submitted entry; reconcile before retrying",
+      serving: { id: chosen.id ?? null, value: chosen.value, unit: chosen.unit, servings: args.servings } };
   }
-  async updateDiaryEntry(id: string, servings: number) {
+  async updateDiaryEntry(id: string, servings: number, meal?: number) {
     const path = `/api/services/diary/${encodeURIComponent(id)}`;
-    return this.put(path, { item: { id, servings } });
+    const current = unwrapFood(await this.get(path));
+    const preserved = meal ?? (typeof current.meal_position === "number" ? current.meal_position : undefined);
+    if (preserved === undefined) throw new MfpError("Diary entry has no meal position to preserve; provide meal explicitly", undefined, "MEAL_UNKNOWN");
+    await this.put(path, { item: { id, servings, meal_position: preserved } });
+    const entry = unwrapFood(await this.get(path));
+    if (Number(entry.meal_position) !== preserved) throw new MfpError("Diary entry meal changed unexpectedly", undefined, "UPSTREAM_ERROR");
+    return { updated: true, entry, meal: preserved };
   }
   async deleteDiaryEntry(id: string) {
-    return this.delete(`/api/services/diary/${encodeURIComponent(id)}`);
+    const path = `/api/services/diary/${encodeURIComponent(id)}`;
+    const existing = unwrapFood(await this.get(path));
+    const date = typeof existing.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(existing.date)
+      ? existing.date : null;
+    if (!date) throw new MfpError("Diary entry has no explicit date for deletion verification", undefined, "UPSTREAM_ERROR");
+    await this.delete(path);
+    let rows: any[];
+    try { rows = verifiableDiaryRows(await this.diary(date)); }
+    catch (error) {
+      return { persisted: false, entry: null, diary_entry_id: id,
+        reason: `Diary read-back failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        code: error instanceof MfpError ? error.code : "UPSTREAM_ERROR",
+        hint: error instanceof MfpError ? error.hint : undefined };
+    }
+    const entry = rows.find((row: any) => String(row.id) === id) ?? null;
+    return { persisted: entry === null, entry, diary_entry_id: id,
+      reason: entry === null ? null : "Diary read-back still contains the deleted entry" };
   }
   async ownFoods(search = "") {
     const response = await this.get(`/api/services/users/foods/mine?search=${encodeURIComponent(search)}`);
@@ -405,6 +599,28 @@ export class MfpClient {
     return search ? foods.filter((food: any) => String(food?.description ?? "").toLowerCase().includes(search.toLowerCase())) : foods;
   }
   async food(id: string) { return this.get(`/api/services/foods/${encodeURIComponent(id)}`); }
+  async foodDetails(id: string) {
+    const food = unwrapFood(await this.food(id));
+    const nutrition = food.nutritional_contents as any;
+    const numberOrNull = (value: unknown) => value === null || value === undefined || value === ""
+      ? null : Number.isFinite(Number(value)) ? Number(value) : null;
+    const raw = numberOrNull(nutrition?.carbohydrates);
+    const upstreamFiber = numberOrNull(nutrition?.fiber);
+    const saved = await readFoodBasis(this.profile, id);
+    // Sidecar metadata can become stale when the food is changed outside NutriPal.
+    const stored = saved && raw !== null && Math.abs(saved.total - raw) < 0.001 &&
+      (upstreamFiber === null ? saved.fiber === 0 : Math.abs(saved.fiber - upstreamFiber) < 0.001)
+      ? saved : null;
+    const fiber = stored?.fiber ?? upstreamFiber;
+    const basis = stored?.basis ?? (nutrition?.carbohydrate_basis === "total" || nutrition?.carbohydrate_basis === "net"
+      ? nutrition.carbohydrate_basis as CarbBasis : "unknown");
+    const total = stored?.total ?? (basis === "total" ? raw
+      : basis === "net" && raw !== null && fiber !== null ? raw + fiber : null);
+    const net = stored?.net ?? (total !== null && fiber !== null ? total - fiber : null);
+    return { ...food, carbohydrates: total, net_carbs: net,
+      fiber, carbohydrate_basis: basis,
+      raw_carbohydrates: nutrition?.carbohydrates ?? null };
+  }
   async ownMeals() {
     const response = await this.get("/api/services/users/meals/mine");
     const items = Array.isArray(response) ? response : (response as any)?.items ?? [];
@@ -448,8 +664,14 @@ export class MfpClient {
       nutrition.energy = { unit: "calories", value: changes.calories };
       nutritionChanged = true;
     }
-    for (const key of ["protein", "carbohydrates", "fat", "fiber", "sugar", "sodium", "saturated_fat", "cholesterol", "potassium"] as const) {
+    for (const key of ["protein", "fat", "fiber", "sugar", "sodium", "saturated_fat", "cholesterol", "potassium"] as const) {
       if (changes[key] !== undefined) { nutrition[key] = changes[key]; nutritionChanged = true; }
+    }
+    if (changes.carbohydrates !== undefined) {
+      const fiber = changes.fiber ?? Number(nutrition.fiber ?? 0);
+      const basis = changes.carbohydrate_basis ?? "total";
+      nutrition.carbohydrates = basis === "net" ? changes.carbohydrates + fiber : changes.carbohydrates;
+      nutritionChanged = true;
     }
     if (nutritionChanged) updates.nutritional_contents = nutrition;
     if (changes.serving_amount !== undefined || changes.serving_unit !== undefined) {
@@ -480,6 +702,26 @@ export class MfpClient {
     };
     await this.patch(path, { item: editable });
     const food = unwrapFood(await this.food(id));
+    if (changes.carbohydrates !== undefined) {
+      const fiber = changes.fiber ?? Number((food.nutritional_contents as any)?.fiber ?? 0);
+      const total = changes.carbohydrate_basis === "net" ? changes.carbohydrates + fiber : changes.carbohydrates;
+      if (Number((food.nutritional_contents as any)?.carbohydrates) !== total)
+        throw new MfpError("MyFitnessPal accepted the food edit but did not save the requested carbohydrates");
+      if (changes.fiber !== undefined && Number((food.nutritional_contents as any)?.fiber) !== changes.fiber)
+        throw new MfpError("MyFitnessPal accepted the food edit but did not save the requested fiber");
+      try { await saveFoodBasis(this.profile, id, changes.carbohydrate_basis ?? "total", total, fiber); }
+      catch { throw new MfpError(`Food ${id} was updated but its carbohydrate basis could not be saved locally. Check the food before retrying.`,
+        undefined, "FOOD_UNVERIFIED"); }
+    } else if (changes.fiber !== undefined) {
+      const prior = await readFoodBasis(this.profile, id);
+      if (Number((food.nutritional_contents as any)?.fiber) !== changes.fiber)
+        throw new MfpError("MyFitnessPal accepted the food edit but did not save the requested fiber");
+      if (prior && Number((food.nutritional_contents as any)?.carbohydrates) === prior.total) {
+        try { await saveFoodBasis(this.profile, id, prior.basis, prior.total, changes.fiber); }
+        catch { throw new MfpError(`Food ${id} was updated but its carbohydrate basis could not be saved locally. Check the food before retrying.`,
+          undefined, "FOOD_UNVERIFIED"); }
+      }
+    }
     if (changes.calories !== undefined && Number((food.nutritional_contents as any)?.energy?.value) !== changes.calories) {
       throw new MfpError("MyFitnessPal accepted the food edit but did not save the new calories");
     }
@@ -487,9 +729,12 @@ export class MfpClient {
   }
 
   async createFood(spec: FoodSpec) {
+    const fiber = spec.fiber ?? 0;
+    const basis = spec.carbohydrate_basis ?? "total";
+    const totalCarbs = basis === "net" ? spec.carbohydrates + fiber : spec.carbohydrates;
     const nutrients: Record<string, unknown> = {
       energy: { unit: "calories", value: spec.calories }, grams: 1,
-      fat: spec.fat, carbohydrates: spec.carbohydrates, protein: spec.protein,
+      fat: spec.fat, carbohydrates: totalCarbs, protein: spec.protein,
     };
     for (const key of ["fiber", "sugar", "sodium", "saturated_fat", "cholesterol", "potassium"] as const) {
       if (spec[key] !== undefined) nutrients[key] = spec[key];
@@ -504,17 +749,27 @@ export class MfpClient {
           gram_weight: 1, fraction: false, index: 1 },
       ],
     };
-    let result: unknown;
-    try { result = await this.post("/api/services/foods", { item }); }
-    catch (error) {
-      if (!(error instanceof MfpError) || (error.status !== 400 && error.status !== 422)) throw error;
-      result = await this.post("/api/services/foods", { items: [item] });
-    }
+    // A rejected response cannot prove the first write failed; do not retry a create blindly.
+    const result = await this.post("/api/services/foods", { item });
     const parsed = result === null ? null : unwrapFood(result);
-    if (parsed?.id !== undefined) return parsed;
-    const exact = (await this.ownFoods(spec.name)).filter((food: any) => food?.description === spec.name);
-    if (exact.length === 1) return exact[0];
-    throw new MfpError("Food creation returned no ID. Check My Foods before retrying to avoid a duplicate.");
+    if (parsed?.id === undefined) throw new MfpError(
+      "Food creation returned no ID. Check My Foods before retrying to avoid a duplicate.", undefined, "FOOD_ID_UNKNOWN");
+    const createdId = String(parsed.id);
+    let verified: Record<string, unknown>;
+    try { verified = unwrapFood(await this.food(createdId)); }
+    catch (error) { throw new MfpError(
+      `Food ${createdId} was submitted but its read-back failed: ${error instanceof Error ? error.message : "unknown error"}. Check My Foods before retrying.`,
+      error instanceof MfpError ? error.status : undefined,
+      error instanceof MfpError && error.code === "MFP_SESSION_STALE" ? error.code : "FOOD_UNVERIFIED",
+      error instanceof MfpError ? error.hint : undefined); }
+    if (Number((verified.nutritional_contents as any)?.carbohydrates) !== totalCarbs ||
+      (spec.fiber !== undefined && Number((verified.nutritional_contents as any)?.fiber) !== fiber))
+      throw new MfpError(`Food ${createdId} was created but its carbohydrates or fiber differed on read-back. Check My Foods before retrying.`,
+        undefined, "FOOD_UNVERIFIED");
+    try { await saveFoodBasis(this.profile, createdId, basis, totalCarbs, fiber); }
+    catch { throw new MfpError(`Food ${createdId} was created but its carbohydrate basis could not be saved locally. Check My Foods before retrying.`,
+      undefined, "FOOD_UNVERIFIED"); }
+    return verified;
   }
 
   async search(query: string, page = 0) {
@@ -527,9 +782,11 @@ export class MfpClient {
       let response: Response;
       try { response = await fetch(BASE + path, { headers, cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30000) }); }
       catch { throw new MfpError("Could not reach the MyFitnessPal food search page"); }
-      this.rememberCookies(response);
-      if (response.status >= 300 && response.status < 400) throw new MfpError("MyFitnessPal redirected food search. Refresh the browser session.", response.status);
+      if (response.status >= 300 && response.status < 400 || response.status === 401 || response.status === 403)
+        throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale`,
+        response.status, "MFP_SESSION_STALE", `re-run auth for profile ${this.profile}`);
       if (!response.ok) throw new MfpError(`Food search page returned HTTP ${response.status}`, response.status);
+      this.rememberCookies(response);
       const html = await response.text();
       const nextData = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
       let data: any;
@@ -587,7 +844,10 @@ export class MfpClient {
         headers: { cookie: await this.cookieHeader(), accept: "text/html, application/json" },
         redirect: "manual", signal: AbortSignal.timeout(30000),
       });
-      this.rememberCookies(response);
+      if (response.status >= 300 && response.status < 400 || response.status === 401 || response.status === 403)
+        throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale`, response.status,
+          "MFP_SESSION_STALE", `re-run auth for profile ${this.profile}`);
+      if (response.ok) this.rememberCookies(response);
       const type = response.headers.get("content-type") ?? "";
       const result: Record<string, unknown> = { path, status: response.status, content_type: type.split(";", 1)[0] };
       if (type.includes("json")) {
@@ -627,6 +887,7 @@ export interface FoodSpec {
   name: string; brand?: string; calories: number; protein: number; carbohydrates: number; fat: number;
   serving_amount: number; serving_unit: string; country_code?: string;
   fiber?: number; sugar?: number; sodium?: number; saturated_fat?: number; cholesterol?: number; potassium?: number;
+  carbohydrate_basis?: CarbBasis;
 }
 
 export function unwrapFood(result: unknown): Record<string, unknown> {

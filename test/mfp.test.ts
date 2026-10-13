@@ -1,13 +1,71 @@
-import { afterEach, expect, test } from "bun:test";
-import { MfpClient } from "../src/mfp.ts";
+import { afterAll, afterEach, expect, test } from "bun:test";
+import { MfpClient, MfpError, saveSession, listProfiles } from "../src/mfp.ts";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const originalFetch = globalThis.fetch;
 const originalCookie = process.env.MFP_COOKIE;
+const originalProfile = process.env.MFP_PROFILE;
+const originalDataDir = process.env.MFP_DATA_DIR;
+const testDataDir = await mkdtemp(join(tmpdir(), "nutripal-test-"));
+process.env.MFP_DATA_DIR = testDataDir;
+
+afterAll(async () => {
+  await rm(testDataDir, { recursive: true, force: true });
+  if (originalDataDir === undefined) delete process.env.MFP_DATA_DIR;
+  else process.env.MFP_DATA_DIR = originalDataDir;
+});
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   if (originalCookie === undefined) delete process.env.MFP_COOKIE;
   else process.env.MFP_COOKIE = originalCookie;
+  if (originalProfile === undefined) delete process.env.MFP_PROFILE;
+  else process.env.MFP_PROFILE = originalProfile;
+  process.env.MFP_DATA_DIR = testDataDir;
+});
+
+test("named sessions stay isolated and list_profiles never returns cookies", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nutripal-profiles-"));
+  try {
+    process.env.MFP_DATA_DIR = dir;
+    process.env.MFP_PROFILE = "home";
+    process.env.MFP_COOKIE = "env-home";
+    await saveSession("disk-home", "home");
+    await saveSession("disk-work", "work");
+    const cookies: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      cookies.push(new Headers(init?.headers).get("cookie") ?? "");
+      return Response.json({ id: "user" });
+    }) as typeof fetch;
+    await Promise.all([new MfpClient().account(), new MfpClient(undefined, "work").account()]);
+    expect(cookies).toContain("__Secure-next-auth.session-token=env-home");
+    expect(cookies).toContain("__Secure-next-auth.session-token=disk-work");
+    const profiles = await listProfiles();
+    expect(profiles.map((entry) => entry.profile)).toEqual(["home", "work"]);
+    expect(profiles.every((entry) => entry.valid && entry.last_verified)).toBe(true);
+    expect(JSON.stringify(profiles)).not.toContain("disk-work");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("legacy session is the default only when no named default exists", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "nutripal-legacy-"));
+  try {
+    process.env.MFP_DATA_DIR = dir;
+    delete process.env.MFP_COOKIE;
+    await writeFile(join(dir, "session"), "legacy-token");
+    const cookies: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      cookies.push(new Headers(init?.headers).get("cookie") ?? "");
+      return Response.json({ id: "user" });
+    }) as typeof fetch;
+    await new MfpClient(undefined, "default").account();
+    await saveSession("new-token", "default");
+    await new MfpClient(undefined, "default").account();
+    expect(cookies).toEqual(["__Secure-next-auth.session-token=legacy-token",
+      "__Secure-next-auth.session-token=new-token"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("custom food creation carries the CSRF cookie and reads an items envelope", async () => {
@@ -21,6 +79,8 @@ test("custom food creation carries the CSRF cookie and reads an items envelope",
     if (path === "/api/auth/csrf") return new Response(JSON.stringify({ csrfToken: "csrf-test" }), {
       headers: { "content-type": "application/json", "set-cookie": "__Host-next-auth.csrf-token=csrf-cookie; Path=/; Secure" },
     });
+    if (path === "/api/services/foods/food-123") return Response.json({ item: { id: "food-123",
+      description: "Check food", nutritional_contents: { carbohydrates: 20 } } });
     return new Response(JSON.stringify({ items: [{ id: "food-123", description: "Check food" }] }), {
       headers: { "content-type": "application/json" },
     });
@@ -29,10 +89,37 @@ test("custom food creation carries the CSRF cookie and reads an items envelope",
   const food = await new MfpClient().createFood({ name: "Check food", calories: 100, protein: 4,
     carbohydrates: 20, fat: 2, serving_amount: 1, serving_unit: "serving" });
   expect(food.id).toBe("food-123");
-  expect(calls.map((call) => call.path)).toEqual(["/api/auth/csrf", "/api/services/foods"]);
+  expect(calls.map((call) => call.path)).toEqual(["/api/auth/csrf", "/api/services/foods", "/api/services/foods/food-123"]);
   expect(calls[1]?.cookie).toContain("__Host-next-auth.csrf-token=csrf-cookie");
   expect(calls[1]?.csrf).toBe("csrf-test");
   expect(calls[1]?.body.item.public).toBe(false);
+});
+
+test("parallel writes share the initial CSRF token and cookie", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  let csrfCalls = 0;
+  const writes: { csrf: string | null; cookie: string | null }[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/auth/csrf") {
+      csrfCalls++;
+      return new Response(JSON.stringify({ csrfToken: "csrf-test" }), {
+        headers: { "content-type": "application/json", "set-cookie": "__Host-next-auth.csrf-token=csrf-cookie; Path=/; Secure" },
+      });
+    }
+    const headers = new Headers(init?.headers);
+    writes.push({ csrf: headers.get("x-csrf-token"), cookie: headers.get("cookie") });
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+
+  const client = new MfpClient();
+  await Promise.all([client.delete("/api/first"), client.delete("/api/second")]);
+  expect(csrfCalls).toBe(1);
+  expect(writes).toHaveLength(2);
+  for (const write of writes) {
+    expect(write.csrf).toBe("csrf-test");
+    expect(write.cookie).toContain("__Host-next-auth.csrf-token=csrf-cookie");
+  }
 });
 
 test("an HTML challenge cannot look like a successful API response", async () => {
@@ -92,11 +179,104 @@ test("diary logging sends the exact serving without extra catalog fields", async
       submitted = JSON.parse(String(init?.body));
       return json({ items: [{ id: "entry-1" }] });
     }
+    if (path === "/api/services/diary/read_diary") return json([{
+      id: "entry-1", type: "food_entry", date: "2026-10-11", food: { id: "42" }, meal_position: 0,
+      servings: 2, serving_size: { id: "extra", value: 100, unit: "g" },
+    }]);
     throw new Error(`Unexpected path ${path}`);
   }) as typeof fetch;
-  await new MfpClient().logFood({ food_id: "42", date: "2026-10-11", meal_position: 0, servings: 2 });
+  const result = await new MfpClient().logFood({ food_id: "42", date: "2026-10-11", meal_position: 0, servings: 2 });
+  expect(result.persisted).toBe(true);
   expect(submitted.items[0].food).toEqual({ id: "42", version: "42" });
   expect(submitted.items[0].serving_size).toEqual({ unit: "g", value: 100, nutrition_multiplier: 1 });
+});
+
+test("serving labels match normalized value and unit, and an unknown amount lists all options", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  let submitted: any;
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/services/foods/42") return Response.json({ item: { id: "42", serving_sizes: [
+      { id: "small", value: 100, unit: "ml", nutrition_multiplier: 1 },
+      { id: "large", value: 250, unit: "ml", nutrition_multiplier: 2.5 },
+    ] } });
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/diary") { submitted = JSON.parse(String(init?.body)); return Response.json({ items: [{ id: "entry-1" }] }); }
+    if (path === "/api/services/diary/read_diary") return Response.json([]);
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  const client = new MfpClient();
+  const result = await client.logFood({ food_id: "42", date: "2026-10-11", meal_position: 0,
+    servings: 1, serving_unit: " 100   ML " });
+  expect(result.serving).toEqual({ id: "small", value: 100, unit: "ml", servings: 1 });
+  expect(result).toMatchObject({ persisted: false, diary_entry_id: "entry-1" });
+  expect(submitted.items[0].serving_size.value).toBe(100);
+  await expect(client.logFood({ food_id: "42", date: "2026-10-11", meal_position: 0,
+    servings: 1, serving_value: 200, serving_unit: "ml" })).rejects.toThrow('"id":"small","value":100,"unit":"ml"');
+  await expect(client.logFood({ food_id: "42", date: "2026-10-11", meal_position: 0,
+    servings: 1, serving_unit: "ml" })).rejects.toThrow("ambiguous");
+});
+
+test("net carbohydrate input is converted to explicit total and net output", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  let nutrition: any;
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/foods" && init?.method === "POST") {
+      nutrition = JSON.parse(String(init.body)).item.nutritional_contents;
+      return Response.json({ item: { id: "food-net" } });
+    }
+    if (path === "/api/services/foods/food-net") return Response.json({ item: { id: "food-net", nutritional_contents: nutrition } });
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  const client = new MfpClient();
+  await client.createFood({ name: "Net food", calories: 100, protein: 1, carbohydrates: 32,
+    carbohydrate_basis: "net", fiber: 9, fat: 1, serving_amount: 1, serving_unit: "serving" });
+  expect(nutrition.carbohydrates).toBe(41);
+  expect(await client.foodDetails("food-net")).toMatchObject({ carbohydrates: 41, net_carbs: 32,
+    fiber: 9, carbohydrate_basis: "net" });
+});
+
+test("diary deletion reads back the affected date", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  let deleted = false;
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/diary/entry-1" && init?.method === "DELETE") { deleted = true; return Response.json({}); }
+    if (path === "/api/services/diary/entry-1") return Response.json({ item: { id: "entry-1", date: "2026-10-11" } });
+    if (path === "/api/services/diary/read_diary") return Response.json(deleted ? [] : [{ id: "entry-1" }]);
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  expect(await new MfpClient().deleteDiaryEntry("entry-1")).toMatchObject({ persisted: true,
+    entry: null, diary_entry_id: "entry-1" });
+});
+
+test("failed diary read-back retains the ID returned by logging", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/services/foods/42") return Response.json({ item: { id: "42",
+      serving_sizes: [{ value: 1, unit: "serving", nutrition_multiplier: 1 }] } });
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/diary") return Response.json({ items: [{ id: "entry-1" }] });
+    if (path === "/api/services/diary/read_diary") return new Response(null, { status: 503 });
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  const result = await new MfpClient().logFood({ food_id: "42", date: "2026-10-11", meal_position: 0, servings: 1 });
+  expect(result).toMatchObject({ persisted: false, diary_entry_id: "entry-1", code: "UPSTREAM_ERROR" });
+});
+
+test("authenticated redirects have a stale-session code and profile hint", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async () => new Response(null, { status: 302, headers: { location: "/login" } })) as unknown as typeof fetch;
+  try { await new MfpClient(undefined, "work", true).food("42"); throw new Error("Expected a redirect error"); }
+  catch (error) {
+    expect(error).toBeInstanceOf(MfpError);
+    expect((error as MfpError).code).toBe("MFP_SESSION_STALE");
+    expect((error as MfpError).hint).toBe("re-run auth for profile work");
+  }
 });
 
 test("food search reads results embedded in the current search page", async () => {
@@ -117,20 +297,32 @@ test("food search reads results embedded in the current search page", async () =
   expect(paths).toEqual(["/food/calorie-chart-nutrition-facts/banana/0"]);
 });
 
-test("diary edit sends the minimal PUT item", async () => {
+test("diary edit preserves the existing meal and returns the updated entry", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
   let body: any;
   globalThis.fetch = (async (input, init) => {
     const path = new URL(String(input)).pathname;
     if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
     if (path === "/api/services/diary/entry-1") {
-      body = JSON.parse(String(init?.body));
-      return Response.json({ items: [{ id: "entry-1", servings: 2 }] });
+      if (init?.method === "PUT") { body = JSON.parse(String(init?.body)); return Response.json({ items: [{ id: "entry-1" }] }); }
+      return Response.json({ item: { id: "entry-1", servings: body ? 2 : 1, meal_position: 0 } });
     }
     throw new Error(`Unexpected path ${path}`);
   }) as typeof fetch;
-  await new MfpClient().updateDiaryEntry("entry-1", 2);
-  expect(body).toEqual({ item: { id: "entry-1", servings: 2 } });
+  const result = await new MfpClient().updateDiaryEntry("entry-1", 2);
+  expect(body).toEqual({ item: { id: "entry-1", servings: 2, meal_position: 0 } });
+  expect(result.entry).toMatchObject({ id: "entry-1", meal_position: 0, servings: 2 });
+});
+
+test("diary edit refuses to move an entry when its meal is unknown", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  let writes = 0;
+  globalThis.fetch = (async (_input, init) => {
+    if (init?.method === "PUT") writes++;
+    return Response.json({ item: { id: "entry-1", servings: 1 } });
+  }) as typeof fetch;
+  await expect(new MfpClient().updateDiaryEntry("entry-1", 2)).rejects.toThrow("meal position to preserve");
+  expect(writes).toBe(0);
 });
 
 test("diary read requests both meal totals and food entries", async () => {
