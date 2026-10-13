@@ -279,22 +279,57 @@ test("authenticated redirects have a stale-session code and profile hint", async
   }
 });
 
-test("food search reads results embedded in the current search page", async () => {
+test("food search uses the Next.js data route and encoded params", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
-  const paths: string[] = [];
-  globalThis.fetch = (async (input) => {
+  const requests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
     const url = new URL(String(input));
-    paths.push(url.pathname);
-    return new Response(`<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
-      buildId: "test-build", props: { pageProps: { dehydratedState: { queries: [{
-        state: { data: { items: [{ item: { id: "banana-1", description: "Banana", brand_name: "Generic" } }] } },
-      }] } } },
-    })}</script>`, { headers: { "content-type": "text/html" } });
+    requests.push(url.pathname + url.search);
+    if (url.pathname === "/") {
+      expect(new Headers(init?.headers).get("cookie")).toBeNull();
+      return new Response('<script id="__NEXT_DATA__">{"buildId":"test-build"}</script>');
+    }
+    expect(url.pathname).toBe("/_next/data/test-build/food/calorie-chart-nutrition-facts.json");
+    expect(JSON.parse(url.searchParams.get("params")!)).toEqual(["banana & pear", 2]);
+    expect(new Headers(init?.headers).get("cookie")).toContain("synthetic-session");
+    return Response.json({ pageProps: { dehydratedState: { queries: [{
+      queryKey: ["food", "banana & pear", 2],
+      state: { data: { items: [{ item: { id: "banana-1", description: "Banana", brand_name: "Generic" } }] } },
+    }] } } });
   }) as typeof fetch;
 
-  const foods = await new MfpClient().search("banana");
+  const foods = await new MfpClient().search("banana & pear", 2);
   expect(foods[0]).toMatchObject({ id: "banana-1", name: "Banana" });
-  expect(paths).toEqual(["/food/calorie-chart-nutrition-facts/banana/0"]);
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toBe("/");
+});
+
+test("food search reports a redirected data request as a stale website session", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input) => new URL(String(input)).pathname === "/"
+    ? new Response('"buildId":"test-build"')
+    : new Response(null, { status: 302, headers: { location: "/account/logout" } })) as typeof fetch;
+  await expect(new MfpClient(undefined, "work", true).search("banana")).rejects.toMatchObject({
+    code: "MFP_SESSION_STALE", hint: "re-run auth for profile work",
+  });
+});
+
+test("food search reports a Next.js redirect embedded in a 200 response as a stale session", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input) => new URL(String(input)).pathname === "/"
+    ? new Response('"buildId":"test-build"')
+    : Response.json({ pageProps: { __N_REDIRECT: "/account/logout", __N_REDIRECT_STATUS: 307 } })) as typeof fetch;
+  await expect(new MfpClient().search("banana")).rejects.toMatchObject({
+    code: "MFP_SESSION_STALE", status: 307, hint: "re-run auth for profile default",
+  });
+});
+
+test("food search rejects generic chart data instead of reporting no matches", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input) => new URL(String(input)).pathname === "/"
+    ? new Response('"buildId":"test-build"')
+    : Response.json({ pageProps: { dehydratedState: { queries: [] } } })) as typeof fetch;
+  await expect(new MfpClient().search("banana")).rejects.toThrow("changed its food search response");
 });
 
 test("diary edit preserves the existing meal and returns the updated entry", async () => {

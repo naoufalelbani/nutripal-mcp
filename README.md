@@ -13,7 +13,7 @@
   <a href="https://www.npmjs.com/package/nutripal-mcp"><img src="https://img.shields.io/npm/v/nutripal-mcp?label=npm" alt="npm" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" /></a>
   <a href="https://github.com/naoufalelbani/nutripal-mcp/releases"><img src="https://img.shields.io/github/v/release/naoufalelbani/nutripal-mcp?label=release" alt="Release" /></a>
-  <a href="https://github.com/naoufalelbani/nutripal-mcp/actions"><img src="https://img.shields.io/badge/tests-19%20passing-brightgreen" alt="Tests" /></a>
+  <a href="https://github.com/naoufalelbani/nutripal-mcp/actions"><img src="https://img.shields.io/badge/tests-22%20passing-brightgreen" alt="Tests" /></a>
 </p>
 
 ---
@@ -340,6 +340,10 @@ Tool errors are returned as structured results with `code`, `message`, and optio
 `status`. Redirects and authentication failures use `MFP_SESSION_STALE` with a profile-specific
 reauthentication hint; 404 uses `NOT_FOUND`, 429 uses `RATE_LIMITED`, and other upstream failures
 use `UPSTREAM_ERROR`. A tool error does not mean the MCP stdio transport is unreachable.
+
+Food search uses MyFitnessPal's Next.js data route. The website session needed by that route can
+expire while account and diary API reads still work. In that case, `search_food` returns
+`MFP_SESSION_STALE`; run `auth --profile NAME` with a fresh browser session.
 
 Before using a new release with real accounts, run `live-check --profile NAME` for each profile.
 With a disposable food and diary date available, run `live-check --profile NAME --write` and review

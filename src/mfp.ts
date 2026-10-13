@@ -773,107 +773,81 @@ export class MfpClient {
   }
 
   async search(query: string, page = 0) {
-    const searchSegments = `${encodeURIComponent(query)}/${page}`;
-    // The rendered search page can contain results directly. Prefer that data because
-    // a valid build ID does not guarantee that the old _next/data route still exists.
-    const searchPath = `/food/calorie-chart-nutrition-facts/${searchSegments}`;
-    const loadPage = async (path: string) => {
-      const headers = new Headers({ cookie: await this.cookieHeader(), accept: "text/html" });
+    if (!query.trim() || !Number.isInteger(page) || page < 0)
+      throw new MfpError("Food search requires a query and a nonnegative page number");
+    // The homepage exposes the current Next.js build ID without an account session.
+    // A service API session can remain valid after the website session expires, so
+    // loading the homepage with that cookie would incorrectly fail before search.
+    const buildId = async () => {
       let response: Response;
-      try { response = await fetch(BASE + path, { headers, cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30000) }); }
-      catch { throw new MfpError("Could not reach the MyFitnessPal food search page"); }
-      if (response.status >= 300 && response.status < 400 || response.status === 401 || response.status === 403)
-        throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale`,
-        response.status, "MFP_SESSION_STALE", `re-run auth for profile ${this.profile}`);
-      if (!response.ok) throw new MfpError(`Food search page returned HTTP ${response.status}`, response.status);
-      this.rememberCookies(response);
+      try { response = await fetch(BASE + "/", { redirect: "manual", signal: AbortSignal.timeout(30000) }); }
+      catch { throw new MfpError("Could not reach the MyFitnessPal homepage for food search"); }
+      if (!response.ok) throw new MfpError(`MyFitnessPal homepage returned HTTP ${response.status}`, response.status);
       const html = await response.text();
-      const nextData = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
-      let data: any;
-      if (nextData) {
-        try { data = JSON.parse(nextData); }
-        catch { throw new MfpError("MyFitnessPal returned invalid food search page data"); }
-      }
-      const buildId = data?.buildId ?? html.match(/"buildId"\s*:\s*"([^"\\]+)"/)?.[1];
-      return { data, buildId };
+      const id = html.match(/"buildId"\s*:\s*"([^"\\]+)"/)?.[1];
+      if (!id) throw new MfpError("Could not find the current MyFitnessPal search build ID");
+      return id;
     };
-    const parseItems = (data: any) => {
-      const queries = data?.props?.pageProps?.dehydratedState?.queries ?? data?.pageProps?.dehydratedState?.queries;
-      if (!Array.isArray(queries)) return undefined;
-      const items = queries.flatMap((q: any) => Array.isArray(q?.state?.data?.items) ? q.state.data.items : []);
-      return items.map((entry: any) => entry?.item ?? entry)
-        .filter((item: any) => item?.id !== undefined && typeof item?.description === "string")
-        .map((item: any) => ({ id: item.id, name: item.description, brand: item.brand_name,
-          verified: item.verified, nutrition: item.nutritional_contents, servings: item.serving_sizes }));
-    };
-    let pageData: any;
-    try { pageData = await loadPage(searchPath); }
+    const params = encodeURIComponent(JSON.stringify([query, page]));
+    const searchData = (id: string) => this.get(
+      `/_next/data/${encodeURIComponent(id)}/food/calorie-chart-nutrition-facts.json?params=${params}`);
+    let id = await buildId();
+    let data: any;
+    try { data = await searchData(id); }
     catch (error) {
       if (!(error instanceof MfpError) || error.status !== 404) throw error;
-      pageData = await loadPage("/");
+      id = await buildId();
+      data = await searchData(id);
     }
-    const fromPage = parseItems(pageData.data);
-    if (fromPage?.length) return fromPage;
-    const id = pageData.buildId ?? (await loadPage("/")).buildId;
-    if (!id) throw new MfpError("Could not find the current MyFitnessPal search build ID");
-    try {
-      const fromData = parseItems(await this.get(`/_next/data/${encodeURIComponent(id)}/food/calorie-chart-nutrition-facts/${searchSegments}.json`));
-      if (fromData) return fromData;
-      throw new MfpError("MyFitnessPal changed its food search response");
-    } catch (error) {
-      if (error instanceof MfpError && error.status === 404) {
-        throw new MfpError("MyFitnessPal removed the food search data route (HTTP 404); no results can be trusted until a current endpoint is identified", 404);
-      }
-      throw error;
-    }
+    const redirect = data?.pageProps?.__N_REDIRECT ?? data?.props?.pageProps?.__N_REDIRECT;
+    if (typeof redirect === "string")
+      throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale`,
+        Number(data?.pageProps?.__N_REDIRECT_STATUS) || 307, "MFP_SESSION_STALE",
+        `re-run auth for profile ${this.profile}`);
+    const queries = data?.pageProps?.dehydratedState?.queries ?? data?.props?.pageProps?.dehydratedState?.queries;
+    const foodQuery = Array.isArray(queries)
+      ? queries.find((entry: any) => Array.isArray(entry?.queryKey) && entry.queryKey[0] === "food")
+      : undefined;
+    const items = foodQuery?.state?.data?.items;
+    if (!Array.isArray(items)) throw new MfpError("MyFitnessPal changed its food search response");
+    return items.map((entry: any) => entry?.item ?? entry)
+      .filter((item: any) => item?.id !== undefined && typeof item?.description === "string")
+      .map((item: any) => ({ id: item.id, name: item.description, brand: item.brand_name,
+        verified: item.verified, nutrition: item.nutritional_contents, servings: item.serving_sizes }));
   }
 
   async diagnoseSearch() {
-    const paths = [
-      "/food/calorie-chart-nutrition-facts/banana/0",
-      "/food/calorie-chart-nutrition-facts/banana",
-      "/food/calorie-chart-nutrition-facts?search=banana",
-      "/food/search?search=banana",
-      "/api/services/foods?search=banana",
-      "/api/services/foods/search?search=banana",
-      "/api/services/search/nutrition?query=banana",
-    ];
+    const homepage = await fetch(BASE + "/", { redirect: "manual", signal: AbortSignal.timeout(30000) });
+    if (!homepage.ok) throw new MfpError(`MyFitnessPal homepage returned HTTP ${homepage.status}`, homepage.status);
+    const buildId = (await homepage.text()).match(/"buildId"\s*:\s*"([^"\\]+)"/)?.[1];
+    if (!buildId) throw new MfpError("Could not find the current MyFitnessPal search build ID");
+    const paths = [`/_next/data/${encodeURIComponent(buildId)}/food/calorie-chart-nutrition-facts.json?params=${encodeURIComponent(JSON.stringify(["banana", 0]))}`];
     const results = [];
     for (const path of paths) {
       const response = await fetch(BASE + path, {
         headers: { cookie: await this.cookieHeader(), accept: "text/html, application/json" },
         redirect: "manual", signal: AbortSignal.timeout(30000),
       });
-      if (response.status >= 300 && response.status < 400 || response.status === 401 || response.status === 403)
-        throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale`, response.status,
-          "MFP_SESSION_STALE", `re-run auth for profile ${this.profile}`);
+      if (response.status >= 300 && response.status < 400 || response.status === 401 || response.status === 403) {
+        results.push({ path, status: response.status, code: "MFP_SESSION_STALE",
+          hint: `re-run auth for profile ${this.profile}` });
+        continue;
+      }
       if (response.ok) this.rememberCookies(response);
       const type = response.headers.get("content-type") ?? "";
       const result: Record<string, unknown> = { path, status: response.status, content_type: type.split(";", 1)[0] };
       if (type.includes("json")) {
         try {
           const data = await response.json() as any;
-          result.keys = data && typeof data === "object" ? Object.keys(data).slice(0, 12) : [];
-          result.items_count = Array.isArray(data?.items) ? data.items.length : undefined;
+          const queries = data?.pageProps?.dehydratedState?.queries ?? [];
+          const foodQuery = Array.isArray(queries) ? queries.find((entry: any) => entry?.queryKey?.[0] === "food") : undefined;
+          if (typeof data?.pageProps?.__N_REDIRECT === "string") {
+            result.code = "MFP_SESSION_STALE";
+            result.hint = `re-run auth for profile ${this.profile}`;
+          }
+          result.has_food_query = !!foodQuery;
+          result.items_count = Array.isArray(foodQuery?.state?.data?.items) ? foodQuery.state.data.items.length : undefined;
         } catch { result.invalid_json = true; }
-      } else if (type.includes("html")) {
-        const html = await response.text();
-        const raw = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i)?.[1];
-        if (raw) {
-          try {
-            const data = JSON.parse(raw);
-            result.next_page = data?.page;
-            result.page_props_keys = Object.keys(data?.props?.pageProps ?? {}).slice(0, 12);
-            result.query_keys = (data?.props?.pageProps?.dehydratedState?.queries ?? [])
-              .slice(0, 10).map((entry: any) => entry?.queryKey);
-            const foodQueries = (data?.props?.pageProps?.dehydratedState?.queries ?? [])
-              .filter((entry: any) => entry?.queryKey?.[0] === "food");
-            result.food_item_counts = foodQueries.map((entry: any) => entry?.state?.data?.items?.length ?? 0);
-            result.food_samples = foodQueries.flatMap((entry: any) => entry?.state?.data?.items ?? [])
-              .slice(0, 3).map((entry: any) => (entry?.item ?? entry)?.description ?? null);
-          } catch { result.invalid_next_data = true; }
-        }
-        result.has_search_result_markup = /matched-food|search-result|food-result/i.test(html);
       }
       results.push(result);
     }

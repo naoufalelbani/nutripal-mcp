@@ -5,6 +5,13 @@ All notable changes to NutriPal MCP are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-13
+
+- Send food searches to the Next.js data route with its required JSON `params` query instead of relying on chart page markup or an incorrect path.
+- Detect website logout redirects embedded in successful Next.js JSON responses and return `MFP_SESSION_STALE` with the affected profile.
+- Update search diagnostics to probe the supported data route without displaying food or account details.
+- Add regression coverage for the request shape, HTTP and embedded redirects, and responses without search data.
+
 ## [0.3.0] - 2026-10-13
 
 - Add named MyFitnessPal sessions, profile selection on account tools, and live profile status.

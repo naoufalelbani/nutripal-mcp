@@ -13,7 +13,7 @@ const client = new Proxy({} as MfpClient, { get(_target, key) {
   const value = Reflect.get(current, key);
   return typeof value === "function" ? value.bind(current) : value;
 } });
-const server = new McpServer({ name: "nutripal-mcp", version: "0.3.0" }, {
+const server = new McpServer({ name: "nutripal-mcp", version: "0.3.1" }, {
   instructions: "Use search_food or list_my_foods to find a food ID before logging it. Creating a food saves it to MyFitnessPal; it does not log it unless create_and_log_food is called. Dates use YYYY-MM-DD. Nutrition values are per specified serving. Read-only tools may run in parallel within and across profiles. Writes are serialized per profile across server processes; writes to different profiles may run in parallel."
 });
 
