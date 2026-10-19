@@ -20,7 +20,13 @@ async function chooseFormat(): Promise<SessionFormat> {
     };
     const onData = (chunk: unknown) => {
       const input = String(chunk);
-      if (input.includes("\u0003")) { stdout.write("\n"); process.exit(130); }
+      if (input.includes("\u0003")) {
+        stdin.off("data", onData);
+        stdin.setRawMode(false);
+        stdin.pause();
+        stdout.write("\n");
+        process.exit(130);
+      }
       if (input.includes("1")) finish("session");
       else if (input.includes("2") || input.includes("\r") || input.includes("\n")) finish("json");
     };
@@ -37,18 +43,46 @@ async function readSecret(): Promise<string> {
   stdout.write("MyFitnessPal session token (input hidden): ");
   stdin.setRawMode(true);
   stdin.resume();
-  let value = "";
-  try {
-    for await (const chunk of stdin) {
+  return new Promise((resolve) => {
+    let value = "";
+    let finished = false;
+    const restoreTerminal = () => {
+      if (finished) return;
+      finished = true;
+      stdin.off("data", onData);
+      stdin.off("end", onEnd);
+      process.off("SIGINT", onSigint);
+      stdin.setRawMode(false);
+      stdin.pause();
+    };
+    const cancel = () => {
+      restoreTerminal();
+      stdout.write("\n");
+      process.exit(130);
+    };
+    const onSigint = () => cancel();
+    const onEnd = () => {
+      restoreTerminal();
+      stdout.write("\n");
+      resolve(value);
+    };
+    const onData = (chunk: unknown) => {
       for (const char of String(chunk)) {
-        if (char === "\r" || char === "\n") { stdout.write("\n"); return value; }
-        if (char === "\u0003") { stdout.write("\n"); process.exit(130); }
-        if (char === "\u007f") value = value.slice(0, -1);
+        if (char === "\u0003" || char === "\u0004") { cancel(); return; }
+        if (char === "\r" || char === "\n") {
+          restoreTerminal();
+          stdout.write("\n");
+          resolve(value);
+          return;
+        }
+        if (char === "\u007f" || char === "\b") value = value.slice(0, -1);
         else value += char;
       }
-    }
-  } finally { stdin.setRawMode(false); stdin.pause(); }
-  return value;
+    };
+    stdin.on("data", onData);
+    stdin.once("end", onEnd);
+    process.once("SIGINT", onSigint);
+  });
 }
 const args = process.argv.slice(2);
 let profileArg: string | undefined;
@@ -65,6 +99,8 @@ const fromEnv = process.env.MFP_COOKIE;
 const format = fromEnv ? "json" : (formatArg as SessionFormat | undefined) || await chooseFormat();
 const token = fromEnv || await readSecret();
 try {
+  if (!token.trim()) throw new Error("A MyFitnessPal session token is required.");
+  stdout.write("Checking the session with MyFitnessPal…\n");
   await new MfpClient(token, profile).account();
   if (!fromEnv) await saveSession(token, profile, format);
   console.log(fromEnv ? `Session checked for profile ${profile}; MFP_COOKIE was not saved.`
