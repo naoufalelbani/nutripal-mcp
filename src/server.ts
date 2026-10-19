@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { MfpClient, MfpError, activeProfile, listProfiles, foodId, withProfileWriteLock, type FoodSpec } from "./mfp.ts";
+import { searchFood, importUsdaFood } from "./usda.ts";
 
 const context = new AsyncLocalStorage<MfpClient>();
 const clients = new Map<string, MfpClient>();
@@ -13,8 +14,8 @@ const client = new Proxy({} as MfpClient, { get(_target, key) {
   const value = Reflect.get(current, key);
   return typeof value === "function" ? value.bind(current) : value;
 } });
-const server = new McpServer({ name: "nutripal-mcp", version: "0.3.1" }, {
-  instructions: "Use search_food or list_my_foods to find a food ID before logging it. Creating a food saves it to MyFitnessPal; it does not log it unless create_and_log_food is called. Dates use YYYY-MM-DD. Nutrition values are per specified serving. Read-only tools may run in parallel within and across profiles. Writes are serialized per profile across server processes; writes to different profiles may run in parallel."
+const server = new McpServer({ name: "nutripal-mcp", version: "0.4.0" }, {
+  instructions: "Use search_food or list_my_foods to find a food. MyFitnessPal IDs can be logged directly; usda: IDs must first be saved with import_usda_food, then logged with the returned MyFitnessPal ID. Creating a food saves it to MyFitnessPal; it does not log it unless create_and_log_food is called. Dates use YYYY-MM-DD. Nutrition values are per specified serving. log_food blocks exact duplicates unless allow_duplicate=true after the user explicitly confirms another occurrence. If the user says the app is empty, do not add supposed missing items based on the API inventory; first reconcile app account and date. listed_by_api and diary_visible mean only that the website API returned the row, never that the mobile app displayed it. Read-only tools may run in parallel within and across profiles. Writes are serialized per profile across server processes; writes to different profiles may run in parallel."
 });
 
 const date = z.iso.date().describe("Diary date in YYYY-MM-DD format");
@@ -51,7 +52,10 @@ function register<T extends z.ZodRawShape>(name: string, description: string, sh
     const profile = typeof requested === "string" ? requested : activeProfile();
     let selected = clients.get(profile);
     if (!selected) { selected = new MfpClient(undefined, profile); clients.set(profile, selected); }
-    const call = () => context.run(selected, () => handler(toolArgs as z.infer<z.ZodObject<T>>));
+    const call = () => context.run(selected, async () => {
+      if (name !== "check_session") await selected.account();
+      return handler(toolArgs as z.infer<z.ZodObject<T>>);
+    });
     if (!destructive) return reply(await call());
     const previous = writeTails.get(profile) ?? Promise.resolve();
     const result = previous.catch(() => {}).then(() => withProfileWriteLock(profile, call));
@@ -65,7 +69,7 @@ server.registerTool("list_profiles", { description: "List named profiles, curren
   inputSchema: z.object({}), annotations: { readOnlyHint: true, destructiveHint: false } },
   async () => { try { return reply(await listProfiles()); } catch (e) { return error(e); } });
 
-register("check_session", "Check whether the saved MyFitnessPal session works", {}, async () => client.account());
+register("check_session", "Check that the saved MyFitnessPal web session is current and matches the account API; service API access alone is insufficient", {}, async () => client.account());
 register("get_my_profile", "Read your MyFitnessPal profile details and friend count", {}, async () => client.myProfile());
 register("get_account_settings", "Read the MyFitnessPal account, profile, diary, privacy, units, and nutrition goal settings", {},
   async () => client.accountSettings());
@@ -83,7 +87,7 @@ register("get_friends_page", "Get the official MyFitnessPal Friends page link fo
     invite_url: "https://www.myfitnesspal.com/friends/invite?src=frlst",
     access: "Open the link in a browser signed in to MyFitnessPal. The current MCP API session cannot access friends data or actions.",
   }));
-register("get_diary", "Read food diary entries for a date", { date }, async ({ date }) => client.diary(date));
+register("get_diary", "Read food diary entries from the MyFitnessPal website API for a date; this does not verify what the mobile app displays", { date }, async ({ date }) => client.diary(date));
 register("get_exercise_diary", "Read exercise and step-adjustment entries from the diary for a date", { date },
   async ({ date }) => client.exerciseDiary(date));
 register("get_diary_range", "Read diary data across a date range of up to 31 days", {
@@ -191,9 +195,9 @@ register("update_my_profile", "Edit your MyFitnessPal profile, including locatio
   return client.updateAccountProfile({ ...(Object.keys(profile).length ? { profile } : {}),
     ...(Object.keys(location).length ? { location } : {}) });
 }, true);
-register("search_food", "Search the MyFitnessPal food catalog and return exact IDs and serving options", {
+register("search_food", "Search MyFitnessPal foods; when its catalog fails, return My Foods and USDA FoodData Central matches with source labels. USDA IDs require import_usda_food before logging", {
   query: z.string().trim().min(2), page: z.number().int().min(0).max(20).default(0),
-}, async ({ query, page }) => client.search(query, page));
+}, async ({ query, page }) => searchFood(client, query, page));
 register("search_exercises", "Search the MyFitnessPal exercise catalog", {
   query: z.string().trim().min(2).max(100),
 }, async ({ query }) => client.searchExercises(query));
@@ -204,6 +208,9 @@ register("list_my_exercises", "List private exercises in your MyFitnessPal accou
 register("get_food", "Read nutrition and serving sizes for a food ID", { food_id: id }, async ({ food_id }) => client.foodDetails(food_id));
 register("list_my_foods", "List private foods you created, including foods absent from public search", {
   search: z.string().default("") }, async ({ search }) => client.ownFoods(search));
+register("import_usda_food", "Save a USDA FoodData Central result as a private MyFitnessPal food with nutrition per 100 g; reuse an exact existing import. Use the returned MyFitnessPal ID with log_food", {
+  fdc_id: z.number().int().positive(),
+}, async ({ fdc_id }) => importUsdaFood(client, fdc_id), true);
 register("create_food", "Create a private custom food in your MyFitnessPal account. Nutrition is per serving.", foodFields,
   async (args) => client.createFood(args as FoodSpec), true);
 register("update_my_food", "Edit a private food in My Foods by exact ID. Provide only the fields to change.", {
@@ -216,12 +223,13 @@ register("update_my_food", "Edit a private food in My Foods by exact ID. Provide
   sodium: nonnegative.optional(), saturated_fat: nonnegative.optional(), cholesterol: nonnegative.optional(), potassium: nonnegative.optional(),
 }, async ({ food_id, ...changes }) => client.updateOwnFood(food_id, changes), true);
 
-register("log_food", "Log an exact food ID and serving to the diary", {
+register("log_food", "Log an exact food ID and serving. Exact duplicates are blocked unless allow_duplicate=true after the user explicitly confirms another occurrence. listed_by_api is API visibility only; app visibility is always unverified by this tool", {
   food_id: id, date, meal_position: meal, servings: positive.default(1),
   serving_size_id: id.optional(), serving_value: positive.optional(), serving_unit: z.string().optional(),
+  allow_duplicate: z.boolean().default(false).describe("Set true only after showing the existing matching diary entry and receiving explicit confirmation to add another occurrence"),
 }, (args) => client.logFood(args), true);
 
-register("create_and_log_food", "Create a private custom food, then log it to the diary. If logging fails, the created food ID is returned for recovery.", {
+register("create_and_log_food", "Create a private custom food, then log it to the diary. If logging fails, the created food ID is returned for recovery. App display is always unverified by this tool, regardless of diary_visible.", {
   ...foodFields, date, meal_position: meal, servings: positive.default(1),
   serving_size_id: id.optional(), serving_value: positive.optional(),
 }, async (args) => {

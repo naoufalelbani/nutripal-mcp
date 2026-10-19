@@ -5,6 +5,20 @@ All notable changes to NutriPal MCP are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-19
+
+### Added
+
+- Add USDA FoodData Central as a clearly labeled food search fallback and let users import USDA foods into their private MyFitnessPal foods before logging.
+- Let `auth` save sessions as either a private plain-text session file or a structured JSON file, with interactive choice and `--format` support.
+- Add source attribution for catalog and USDA results, plus safeguards against accidentally logging an exact duplicate.
+
+### Fixed
+
+- Verify website-session identity before account operations and reject stale sessions even when service API endpoints still return data.
+- Verify diary writes and deletes against the exact entry ID, and report API listing visibility separately from mobile app visibility.
+- Correct gram serving and nutrition calculations in the interactive weight logger.
+
 ## [0.3.1] - 2026-10-13
 
 - Send food searches to the Next.js data route with its required JSON `params` query instead of relying on chart page markup or an incorrect path.

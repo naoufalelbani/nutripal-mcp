@@ -99,11 +99,20 @@ npx nutripal-mcp auth                # default profile from npm
 npx nutripal-mcp auth --profile work # named profile
 ```
 
-Paste the token at the hidden prompt. NutriPal verifies it and stores one `0600` file per profile at
-`~/.config/nutripal-mcp/sessions/<profile>`. An existing legacy `session` file is read as `default` until a named default session is saved. The value is never echoed back.
+In an interactive setup, choose a storage format before entering the token:
+
+- **session** stores only the cookie as plain text in `~/.config/nutripal-mcp/sessions/<profile>`.
+- **JSON** stores the cookie and an `updated_at` timestamp in `~/.config/nutripal-mcp/sessions/<profile>.json`.
+
+Both formats are local plaintext files with owner-only (`0600`) permissions; JSON is structured, not encrypted. NutriPal reads either format and retains support for the older default `session` file. To choose without a prompt, pass `--format session` or `--format json`. After verifying the web session and matching account identity, auth saves the selected format. The cookie is never echoed back. These files remain subject to the persistence of the machine's home directory.
 
 > **Prefer not to store it?** Set `MFP_COOKIE` for this invocation. It applies only to the active
 > profile (`MFP_PROFILE`, or `default`), accepts a bare token or full `Cookie` header, and is never saved by `auth`.
+
+An account API response alone does not prove the website session is valid. If
+`check_session` reports `MFP_SESSION_STALE`, the saved token may still retrieve
+old records by ID while the diary page rejects it. Sign in through the browser
+and save a fresh token before any more diary writes.
 
 ### 3. Register the server
 
@@ -189,13 +198,14 @@ verification times, never cookie values.
 | `update_account_profile` | write | Change username, time zone, language, units, and supported diet/fitness profile fields |
 | `update_my_profile` | write | Edit location, birth date, sex, height, activity level, headline, About Me, goals, and inspirations |
 | `update_diary_settings` | write | Change meal names, tracked nutrients, and diary display/privacy preferences |
-| `search_food` | read | Search the food catalog and return exact IDs and serving options |
+| `search_food` | read | Search MyFitnessPal; if its catalog fails, search My Foods and USDA FoodData Central, with source labels |
 | `search_exercises` | read | Search the exercise catalog |
 | `list_exercises` | read | List the exercise catalog |
 | `get_exercise` | read | Read one exercise by ID |
 | `list_my_exercises` | read | List private exercises in your account |
 | `get_food` | read | Read serving sizes and explicit total/net carbohydrate fields |
 | `list_my_foods` | read | Find foods you created, including private foods |
+| `import_usda_food` | write | Save a USDA search result as a private MyFitnessPal food; reuse an exact prior import |
 | `list_my_meals` | read | List meals saved in My Meals |
 | `list_recent_foods` | read | Recent or frequent foods from up to 31 diary days |
 | `get_food_settings` | read | Read food diary settings, including meal labels |
@@ -277,8 +287,20 @@ Use the upstream nutrition label to resolve an `unknown` basis before relying on
 `serving_value` plus `serving_unit`. A legacy `serving_unit` label still works. Labels ignore
 case and repeated whitespace. Unknown or ambiguous selections return every valid
 `{id, value, unit}` option. An explicit amount never selects a default serving.
-Results include the effective serving and a diary read-back status: `persisted`, `entry`,
-`diary_entry_id`, and a reason when persistence could not be confirmed.
+Results include the effective serving, `persisted`, `entry`, `diary_entry_id`,
+`verified_by`, `listed_by_api`, and `app_visibility: "unverified"`. The legacy
+`diary_visible` field means API listing visibility only. When the date listing is empty or delayed,
+NutriPal verifies the exact returned entry ID through MyFitnessPal's item endpoint.
+In that case `persisted: true`, `verified_by: "entry_id"`, and
+`diary_visible: false` mean the entry exists in MyFitnessPal, while the date
+listing did not include it. The MyFitnessPal app display is unverified; the
+response includes a `visibility_warning`, and the assistant must not tell the
+user the food is visible in the app. Do not retry the write based on an empty listing.
+An identical food, date, meal, serving size, and serving count is blocked with
+`DUPLICATE_EXISTS`. After the user explicitly confirms another occurrence,
+`log_food` may be called with `allow_duplicate: true`.
+If `get_diary` receives an empty listing while MyFitnessPal's daily digest counts
+food entries, it reports `DIARY_LIST_INCONSISTENT` instead of showing an empty day.
 
 <details>
 <summary><code>create_food</code> example</summary>
@@ -332,7 +354,8 @@ an unverified result names the submitted food ID when one is available.
 - No command prints the session value, and error output is filtered for tokens, `Bearer` values and
   `__Secure-next-auth` strings before it reaches the client.
 - Do not commit the session file or paste its contents in an issue.
-- NutriPal performs no analytics, makes no requests other than to MyFitnessPal, and opens no ports.
+- NutriPal performs no analytics and opens no ports. When MyFitnessPal catalog search fails,
+  it requests food search and selected food details from USDA FoodData Central.
 
 ## Limits
 
@@ -341,8 +364,12 @@ Tool errors are returned as structured results with `code`, `message`, and optio
 reauthentication hint; 404 uses `NOT_FOUND`, 429 uses `RATE_LIMITED`, and other upstream failures
 use `UPSTREAM_ERROR`. A tool error does not mean the MCP stdio transport is unreachable.
 
-Food search uses MyFitnessPal's Next.js data route. The website session needed by that route can
-expire while account and diary API reads still work. In that case, `search_food` returns
+Food search uses MyFitnessPal's `/api/nutrition` route. When it returns HTTP 404,
+`search_food` combines My Foods (`source: "my_foods"`) with USDA FoodData Central
+(`source: "usda_fdc"`). USDA nutrition is per 100 g; USDA IDs start with `usda:` and require
+`import_usda_food` before they can be logged with MyFitnessPal's `log_food`. The CLI
+`log-by-weight` imports a selected USDA item automatically. Set `USDA_API_KEY` to a personal
+data.gov key for regular use; the built-in `DEMO_KEY` has low rate limits. A redirected request returns
 `MFP_SESSION_STALE`; run `auth --profile NAME` with a fresh browser session.
 
 Before using a new release with real accounts, run `live-check --profile NAME` for each profile.

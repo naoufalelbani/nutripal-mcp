@@ -6,6 +6,16 @@ import lockfile from "proper-lockfile";
 
 const BASE = "https://www.myfitnesspal.com";
 const TOKEN_NAME = "__Secure-next-auth.session-token";
+const FOOD_SEARCH_PAGE_SIZE = 10;
+const FOOD_SEARCH_MAX_ITEMS = 100;
+const FOOD_SEARCH_COUNTRY = "US";
+const FOOD_SEARCH_RESOURCE_TYPE = "foods";
+const foodSearchPath = (query: string, page: number) => {
+  const params = new URLSearchParams({ query, page: String(page + 1),
+    offset: String(FOOD_SEARCH_PAGE_SIZE), max_items: String(FOOD_SEARCH_MAX_ITEMS),
+    country_code: FOOD_SEARCH_COUNTRY, resource_type: FOOD_SEARCH_RESOURCE_TYPE });
+  return `/api/nutrition?${params}`;
+};
 const dataDir = () => process.env.MFP_DATA_DIR || join(homedir(), ".config", "nutripal-mcp");
 
 export class MfpError extends Error {
@@ -23,7 +33,9 @@ export function validateProfile(profile: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profile)) throw new MfpError("Invalid profile name");
   return profile;
 }
-const sessionPath = (profile: string) => join(dataDir(), "sessions", validateProfile(profile));
+const sessionPath = (profile: string) => join(dataDir(), "sessions", `${validateProfile(profile)}.json`);
+const legacyProfileSessionPath = (profile: string) => join(dataDir(), "sessions", validateProfile(profile));
+export type SessionFormat = "session" | "json";
 const verifiedPath = (profile: string) => join(dataDir(), "sessions", `${validateProfile(profile)}.verified.json`);
 const foodBasisPath = (profile: string, id: string) => join(dataDir(), "food-basis", validateProfile(profile), `${encodeURIComponent(id)}.json`);
 async function writePrivateFile(file: string, value: string) {
@@ -75,14 +87,21 @@ export async function withProfileWriteLock<T>(profile: string, action: () => Pro
   }
 }
 
-export async function saveSession(value: string, profile = "default") {
+export async function saveSession(value: string, profile = "default", format: SessionFormat = "json") {
   const cookie = normalizeCookie(value);
   const dir = join(dataDir(), "sessions");
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dataDir(), 0o700);
   await chmod(dir, 0o700);
-  const file = sessionPath(profile);
-  await writePrivateFile(file, cookie);
+  const jsonFile = sessionPath(profile);
+  const sessionFile = legacyProfileSessionPath(profile);
+  if (format === "json") {
+    await writePrivateFile(jsonFile, JSON.stringify({ cookie, updated_at: new Date().toISOString() }, null, 2));
+    await rm(sessionFile, { force: true });
+  } else {
+    await writePrivateFile(sessionFile, cookie);
+    await rm(jsonFile, { force: true });
+  }
   await markVerified(profile);
 }
 
@@ -94,7 +113,10 @@ async function markVerified(profile: string) {
 
 export async function listProfiles() {
   let names: string[] = [];
-  try { names = (await readdir(join(dataDir(), "sessions"))).filter((name) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)); }
+  try {
+    names = (await readdir(join(dataDir(), "sessions"))).map((name) => name.endsWith(".json") ? name.slice(0, -5) : name)
+      .filter((name) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name));
+  }
   catch { /* No named sessions yet. */ }
   try { await readFile(join(dataDir(), "session")); if (!names.includes("default")) names.push("default"); }
   catch { /* No legacy session. */ }
@@ -124,9 +146,17 @@ function normalizeCookie(value: string) {
 async function sessionCookie(profile: string, useEnvCookie: boolean) {
   const fromEnv = useEnvCookie ? process.env.MFP_COOKIE : undefined;
   if (fromEnv) return normalizeCookie(fromEnv);
-  try { return normalizeCookie(await readFile(sessionPath(profile), "utf8")); }
+  try {
+    const saved = JSON.parse(await readFile(sessionPath(profile), "utf8"));
+    if (typeof saved?.cookie !== "string") throw new Error("Invalid saved session JSON");
+    return normalizeCookie(saved.cookie);
+  }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // Preserve compatibility with session files written before JSON storage.
+    try { return normalizeCookie(await readFile(legacyProfileSessionPath(profile), "utf8")); }
+    catch (legacyError) {
+      if ((legacyError as NodeJS.ErrnoException).code !== "ENOENT") throw legacyError;
+    }
     if (profile === "default") {
       try { return normalizeCookie(await readFile(join(dataDir(), "session"), "utf8")); }
       catch { /* No legacy session. */ }
@@ -250,9 +280,17 @@ export class MfpClient {
   delete(path: string) { return this.request(path, { method: "DELETE" }, true); }
 
   async account() {
+    const session = await this.get("/api/auth/session") as any;
+    const sessionId = session?.userId ?? session?.user?.id;
+    const expires = typeof session?.expires === "string" ? Date.parse(session.expires) : NaN;
+    if (!session?.user || sessionId === undefined || !Number.isFinite(expires) || expires <= Date.now()) {
+      throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale; sign in again and save a fresh session token`,
+        undefined, "MFP_SESSION_STALE", `re-run auth for profile ${this.profile}`);
+    }
     const account = await this.get("/api/services/users") as any;
-    if (!account || typeof account !== "object" || account.id === undefined) {
-      throw new MfpError("MyFitnessPal session is empty or expired");
+    if (!account || typeof account !== "object" || account.id === undefined || String(account.id) !== String(sessionId)) {
+      throw new MfpError(`MyFitnessPal account for profile ${this.profile} did not match its web session`,
+        undefined, "MFP_SESSION_STALE", `re-run auth for profile ${this.profile}`);
     }
     if (!this.providedCookie && (!this.useEnvCookie || !process.env.MFP_COOKIE)) {
       try { await markVerified(this.profile); } catch { /* A metadata write must not invalidate a working session. */ }
@@ -436,11 +474,29 @@ export class MfpClient {
     }
     return { updated: true, settings: verified };
   }
+  private async readDiary(date: string, types: string) {
+    const profile = await this.get("/api/services/diary/profile") as any;
+    if (typeof profile?.username !== "string" || !profile.username) {
+      throw new MfpError("MyFitnessPal did not return a username for diary reading");
+    }
+    const params = new URLSearchParams({ entry_date: date, fields: "all", types,
+      username: profile.username });
+    return this.get(`/api/services/diary/read_diary?${params}`);
+  }
   async diary(date: string) {
-    return diaryRows(await this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=diary_meal%2Cfood_entry%2Cexercise_entry`));
+    const rows = diaryRows(await this.readDiary(date, "diary_meal,food_entry,exercise_entry"));
+    if (rows.length === 0) {
+      const digest = await this.liveDigest(date, date) as any;
+      const count = digest?.weekly_digest?.weekly_metrics?.entry_count;
+      if (typeof count === "number" && count > 0) {
+        throw new MfpError(`MyFitnessPal's diary listing is empty for ${date}, but its digest counts ${count} food entries. The listing is incomplete; verify known entry IDs before retrying writes.`,
+          undefined, "DIARY_LIST_INCONSISTENT");
+      }
+    }
+    return rows;
   }
   async exerciseDiary(date: string) {
-    const entries = await this.get(`/api/services/diary/read_diary?date=${encodeURIComponent(date)}&types=exercise_entry`);
+    const entries = await this.readDiary(date, "exercise_entry");
     if (!Array.isArray(entries)) throw new MfpError("MyFitnessPal changed its exercise diary response");
     return entries;
   }
@@ -511,7 +567,7 @@ export class MfpClient {
     return { from, to, list, items };
   }
   async logFood(args: { food_id: string; date: string; meal_position: number; servings: number;
-    serving_size_id?: string; serving_value?: number; serving_unit?: string }) {
+    serving_size_id?: string; serving_value?: number; serving_unit?: string; allow_duplicate?: boolean }) {
     const food = unwrapFood(await this.food(args.food_id));
     const sizes = food.serving_sizes;
     if (!Array.isArray(sizes) || !sizes.length) throw new MfpError("This food has no serving sizes");
@@ -528,6 +584,18 @@ export class MfpClient {
     if (matches.length !== 1) throw new MfpError(`Serving selection ${matches.length ? "is ambiguous" : "was not found"}. Valid options: ${JSON.stringify(options)}`,
       undefined, "INVALID_SERVING");
     const chosen = matches[0];
+    const sameNumber = (left: unknown, right: number) => Number.isFinite(Number(left)) &&
+      Math.abs(Number(left) - right) <= Math.max(0.00001, Math.abs(right) * 0.00001);
+    // A date listing is the strongest available duplicate check. Fail closed if it cannot be read.
+    const existing = verifiableDiaryRows(await this.diary(args.date)).filter((row: any) =>
+      row.type === "food_entry" && row.deleted !== true && String(row.date).slice(0, 10) === args.date &&
+      String(row.food?.id) === args.food_id && Number(row.meal_position) === args.meal_position &&
+      sameNumber(row.servings, args.servings) && sameNumber(row.serving_size?.value, Number(chosen.value)) &&
+      normalize(row.serving_size?.unit) === normalize(chosen.unit));
+    if (existing.length && !args.allow_duplicate) {
+      throw new MfpError(`Matching diary entry already exists on ${args.date}: ${existing.map((row: any) => row.id).join(", ")}. Ask whether another occurrence is intended before using allow_duplicate=true.`,
+        undefined, "DUPLICATE_EXISTS");
+    }
     const submitted = await this.post("/api/services/diary", { items: [{ type: "food_entry", date: args.date,
       food: { id: args.food_id, version: String(food.version ?? args.food_id) }, servings: args.servings,
       meal_position: args.meal_position,
@@ -536,30 +604,40 @@ export class MfpClient {
     const first = Array.isArray(submitted) ? submitted[0] : (submitted as any)?.items?.[0] ?? submitted;
     const returned = first?.item ?? first;
     const entryId = returned?.id === undefined ? null : String(returned.id);
-    let rows: any[];
+    let rows: any[] = [];
+    let listError: unknown;
     try { rows = verifiableDiaryRows(await this.diary(args.date)); }
-    catch (error) {
-      return { persisted: false, entry: null, diary_entry_id: entryId,
-        reason: `Diary read-back failed: ${error instanceof Error ? error.message : "unknown error"}`,
-        code: error instanceof MfpError ? error.code : "UPSTREAM_ERROR",
-        hint: error instanceof MfpError ? error.hint : undefined,
-        serving: { id: chosen.id ?? null, value: chosen.value, unit: chosen.unit, servings: args.servings } };
-    }
-    // Without the created ID an older identical row cannot prove this write persisted.
-    const entry = entryId === null ? null : rows.find((row: any) => row?.type === "food_entry"
+    catch (error) { listError = error; }
+    // The date listing can lag or return an empty array even when an entry is saved.
+    // Verify the exact returned ID through the item endpoint before reporting failure.
+    const listed = entryId === null ? null : rows.find((row: any) => row?.type === "food_entry"
       && String(row.id) === entryId) ?? null;
-    const sameNumber = (left: unknown, right: number) => Number.isFinite(Number(left)) &&
-      Math.abs(Number(left) - right) < 0.000001;
+    let entry = listed;
+    let itemError: unknown;
+    if (entryId !== null && !listed) {
+      try { entry = unwrapFood(await this.get(`/api/services/diary/${encodeURIComponent(entryId)}`)); }
+      catch (error) { itemError = error; }
+    }
     const persisted = Boolean(entry && String(entry.food?.id) === args.food_id &&
+      String(entry.id) === entryId && entry.type === "food_entry" && entry.deleted !== true &&
       String(entry.date).slice(0, 10) === args.date && Number(entry.meal_position) === args.meal_position &&
       sameNumber(entry.servings, args.servings) && sameNumber(entry.serving_size?.value, Number(chosen.value)) &&
       normalize(entry.serving_size?.unit) === normalize(chosen.unit) &&
       (chosen.id === undefined || chosen.id === null || String(entry.serving_size?.id) === String(chosen.id)));
     return { persisted, entry, diary_entry_id: entryId,
+      verified_by: persisted ? (listed ? "diary_list" : "entry_id") : null,
+      diary_visible: listed !== null,
+      listed_by_api: listed !== null,
+      app_visibility: "unverified",
+      visibility_warning: persisted && !listed
+        ? "Entry exists by ID, but the date diary listing omitted it. MyFitnessPal app display is unverified; do not report this as visible in the app or retry the write."
+        : null,
       reason: persisted ? null : entry ? "Diary read-back row did not match the submitted food, date, meal, or serving; reconcile before retrying"
         : entryId === null
         ? "MyFitnessPal returned no diary entry ID; an identical row cannot confirm this write. Reconcile before retrying"
-        : "Diary read-back did not contain the submitted entry; reconcile before retrying",
+        : `The submitted entry could not be verified by ID${itemError instanceof Error ? `: ${itemError.message}` : ""}; reconcile before retrying`,
+      code: !persisted && itemError instanceof MfpError ? itemError.code
+        : !persisted && listError instanceof MfpError ? listError.code : undefined,
       serving: { id: chosen.id ?? null, value: chosen.value, unit: chosen.unit, servings: args.servings } };
   }
   async updateDiaryEntry(id: string, servings: number, meal?: number) {
@@ -579,17 +657,19 @@ export class MfpClient {
       ? existing.date : null;
     if (!date) throw new MfpError("Diary entry has no explicit date for deletion verification", undefined, "UPSTREAM_ERROR");
     await this.delete(path);
-    let rows: any[];
-    try { rows = verifiableDiaryRows(await this.diary(date)); }
+    // An empty date listing does not prove deletion; verify the exact entry ID.
+    let entry: any = null;
+    try { entry = unwrapFood(await this.get(path)); }
     catch (error) {
+      if (error instanceof MfpError && error.status === 404)
+        return { persisted: true, entry: null, diary_entry_id: id, reason: null };
       return { persisted: false, entry: null, diary_entry_id: id,
-        reason: `Diary read-back failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        reason: `Entry read-back failed: ${error instanceof Error ? error.message : "unknown error"}`,
         code: error instanceof MfpError ? error.code : "UPSTREAM_ERROR",
         hint: error instanceof MfpError ? error.hint : undefined };
     }
-    const entry = rows.find((row: any) => String(row.id) === id) ?? null;
-    return { persisted: entry === null, entry, diary_entry_id: id,
-      reason: entry === null ? null : "Diary read-back still contains the deleted entry" };
+    return { persisted: entry?.deleted === true, entry, diary_entry_id: id,
+      reason: entry?.deleted === true ? null : "Entry read-back still contains the deleted entry" };
   }
   async ownFoods(search = "") {
     const response = await this.get(`/api/services/users/foods/mine?search=${encodeURIComponent(search)}`);
@@ -775,53 +855,33 @@ export class MfpClient {
   async search(query: string, page = 0) {
     if (!query.trim() || !Number.isInteger(page) || page < 0)
       throw new MfpError("Food search requires a query and a nonnegative page number");
-    // The homepage exposes the current Next.js build ID without an account session.
-    // A service API session can remain valid after the website session expires, so
-    // loading the homepage with that cookie would incorrectly fail before search.
-    const buildId = async () => {
-      let response: Response;
-      try { response = await fetch(BASE + "/", { redirect: "manual", signal: AbortSignal.timeout(30000) }); }
-      catch { throw new MfpError("Could not reach the MyFitnessPal homepage for food search"); }
-      if (!response.ok) throw new MfpError(`MyFitnessPal homepage returned HTTP ${response.status}`, response.status);
-      const html = await response.text();
-      const id = html.match(/"buildId"\s*:\s*"([^"\\]+)"/)?.[1];
-      if (!id) throw new MfpError("Could not find the current MyFitnessPal search build ID");
-      return id;
-    };
-    const params = encodeURIComponent(JSON.stringify([query, page]));
-    const searchData = (id: string) => this.get(
-      `/_next/data/${encodeURIComponent(id)}/food/calorie-chart-nutrition-facts.json?params=${params}`);
-    let id = await buildId();
     let data: any;
-    try { data = await searchData(id); }
+    try { data = await this.get(foodSearchPath(query, page)); }
     catch (error) {
-      if (!(error instanceof MfpError) || error.status !== 404) throw error;
-      id = await buildId();
-      data = await searchData(id);
+      if (error instanceof MfpError && error.status === 404) {
+        // My Foods uses a separate service endpoint and its IDs remain loggable.
+        const mine = await this.ownFoods(query);
+        if (mine.length) return mine.slice(page * FOOD_SEARCH_PAGE_SIZE, (page + 1) * FOOD_SEARCH_PAGE_SIZE)
+          .filter((item: any) => item?.id !== undefined && typeof item?.description === "string")
+          .map((item: any) => ({ id: item.id, name: item.description, brand: item.brand_name,
+            verified: item.verified, nutrition: item.nutritional_contents, servings: item.serving_sizes,
+            source: "my_foods" as const }));
+        throw new MfpError("MyFitnessPal catalog search is unavailable (HTTP 404), and My Foods has no matches.",
+          404, "SEARCH_UNAVAILABLE", "Refresh the website session or create a private food from a verified nutrition source");
+      }
+      throw error;
     }
-    const redirect = data?.pageProps?.__N_REDIRECT ?? data?.props?.pageProps?.__N_REDIRECT;
-    if (typeof redirect === "string")
-      throw new MfpError(`MyFitnessPal session for profile ${this.profile} is stale`,
-        Number(data?.pageProps?.__N_REDIRECT_STATUS) || 307, "MFP_SESSION_STALE",
-        `re-run auth for profile ${this.profile}`);
-    const queries = data?.pageProps?.dehydratedState?.queries ?? data?.props?.pageProps?.dehydratedState?.queries;
-    const foodQuery = Array.isArray(queries)
-      ? queries.find((entry: any) => Array.isArray(entry?.queryKey) && entry.queryKey[0] === "food")
-      : undefined;
-    const items = foodQuery?.state?.data?.items;
+    const items = data?.items;
     if (!Array.isArray(items)) throw new MfpError("MyFitnessPal changed its food search response");
     return items.map((entry: any) => entry?.item ?? entry)
       .filter((item: any) => item?.id !== undefined && typeof item?.description === "string")
       .map((item: any) => ({ id: item.id, name: item.description, brand: item.brand_name,
-        verified: item.verified, nutrition: item.nutritional_contents, servings: item.serving_sizes }));
+        verified: item.verified, nutrition: item.nutritional_contents, servings: item.serving_sizes,
+        source: "myfitnesspal_catalog" as const }));
   }
 
   async diagnoseSearch() {
-    const homepage = await fetch(BASE + "/", { redirect: "manual", signal: AbortSignal.timeout(30000) });
-    if (!homepage.ok) throw new MfpError(`MyFitnessPal homepage returned HTTP ${homepage.status}`, homepage.status);
-    const buildId = (await homepage.text()).match(/"buildId"\s*:\s*"([^"\\]+)"/)?.[1];
-    if (!buildId) throw new MfpError("Could not find the current MyFitnessPal search build ID");
-    const paths = [`/_next/data/${encodeURIComponent(buildId)}/food/calorie-chart-nutrition-facts.json?params=${encodeURIComponent(JSON.stringify(["banana", 0]))}`];
+    const paths = [foodSearchPath("banana", 0)];
     const results = [];
     for (const path of paths) {
       const response = await fetch(BASE + path, {
@@ -839,14 +899,9 @@ export class MfpClient {
       if (type.includes("json")) {
         try {
           const data = await response.json() as any;
-          const queries = data?.pageProps?.dehydratedState?.queries ?? [];
-          const foodQuery = Array.isArray(queries) ? queries.find((entry: any) => entry?.queryKey?.[0] === "food") : undefined;
-          if (typeof data?.pageProps?.__N_REDIRECT === "string") {
-            result.code = "MFP_SESSION_STALE";
-            result.hint = `re-run auth for profile ${this.profile}`;
-          }
-          result.has_food_query = !!foodQuery;
-          result.items_count = Array.isArray(foodQuery?.state?.data?.items) ? foodQuery.state.data.items.length : undefined;
+          result.has_items = Array.isArray(data?.items);
+          result.items_count = Array.isArray(data?.items) ? data.items.length : undefined;
+          if (response.status === 404) result.code = "SEARCH_UNAVAILABLE";
         } catch { result.invalid_json = true; }
       }
       results.push(result);

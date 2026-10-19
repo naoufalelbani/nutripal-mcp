@@ -1,6 +1,6 @@
 {
   "name": "nutripal-mcp",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "MCP server for MyFitnessPal account settings, food and exercise diaries, goals, measurements, and nutrition tools.",
   "module": "dist/server.js",
   "type": "module",

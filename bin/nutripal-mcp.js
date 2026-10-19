@@ -8,14 +8,14 @@ const USAGE = `NutriPal MCP v${version}
 
 Usage:
   nutripal-mcp                         Start the MCP server on stdio
-  nutripal-mcp auth [--profile NAME]   Verify and save a named session
+  nutripal-mcp auth [--profile NAME] [--format session|json]   Verify and save a named session
   nutripal-mcp live-check [--profile NAME] [--write]
   nutripal-mcp log-by-weight <food> <grams> [--date YYYY-MM-DD] [--meal NAME]
   nutripal-mcp diagnose
   nutripal-mcp --version
   nutripal-mcp --help
 
-Sessions: ~/.config/nutripal-mcp/sessions/<profile>. MFP_COOKIE is invocation-only.
+Sessions: ~/.config/nutripal-mcp/sessions/<profile>[.json]. Auth supports session or JSON storage; MFP_COOKIE is invocation-only.
 Docs: https://github.com/naoufalelbani/nutripal-mcp`;
 
 const [, , command, ...rest] = process.argv;

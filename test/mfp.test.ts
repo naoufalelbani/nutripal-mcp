@@ -35,8 +35,11 @@ test("named sessions stay isolated and list_profiles never returns cookies", asy
     await saveSession("disk-home", "home");
     await saveSession("disk-work", "work");
     const cookies: string[] = [];
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = (async (input, init) => {
       cookies.push(new Headers(init?.headers).get("cookie") ?? "");
+      if (new URL(String(input)).pathname === "/api/auth/session") return Response.json({
+        user: { id: "user" }, userId: "user", expires: "2099-01-01T00:00:00Z",
+      });
       return Response.json({ id: "user" });
     }) as typeof fetch;
     await Promise.all([new MfpClient().account(), new MfpClient(undefined, "work").account()]);
@@ -56,16 +59,34 @@ test("legacy session is the default only when no named default exists", async ()
     delete process.env.MFP_COOKIE;
     await writeFile(join(dir, "session"), "legacy-token");
     const cookies: string[] = [];
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = (async (input, init) => {
       cookies.push(new Headers(init?.headers).get("cookie") ?? "");
+      if (new URL(String(input)).pathname === "/api/auth/session") return Response.json({
+        user: { id: "user" }, userId: "user", expires: "2099-01-01T00:00:00Z",
+      });
       return Response.json({ id: "user" });
     }) as typeof fetch;
     await new MfpClient(undefined, "default").account();
     await saveSession("new-token", "default");
     await new MfpClient(undefined, "default").account();
     expect(cookies).toEqual(["__Secure-next-auth.session-token=legacy-token",
+      "__Secure-next-auth.session-token=legacy-token", "__Secure-next-auth.session-token=new-token",
       "__Secure-next-auth.session-token=new-token"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("account rejects a cleared web session even when the users API still returns data", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  const paths: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input)).pathname;
+    paths.push(path);
+    if (path === "/api/auth/session") return Response.json({});
+    if (path === "/api/services/users") return Response.json({ id: "user" });
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  await expect(new MfpClient().account()).rejects.toMatchObject({ code: "MFP_SESSION_STALE" });
+  expect(paths).toEqual(["/api/auth/session"]);
 });
 
 test("custom food creation carries the CSRF cookie and reads an items envelope", async () => {
@@ -175,6 +196,7 @@ test("diary logging sends the exact serving without extra catalog fields", async
       { unit: "g", value: 100, nutrition_multiplier: 1, id: "extra", gram_weight: 100 },
     ] } });
     if (path === "/api/auth/csrf") return json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/diary/profile") return json({ username: "sample" });
     if (path === "/api/services/diary") {
       submitted = JSON.parse(String(init?.body));
       return json({ items: [{ id: "entry-1" }] });
@@ -185,10 +207,77 @@ test("diary logging sends the exact serving without extra catalog fields", async
     }]);
     throw new Error(`Unexpected path ${path}`);
   }) as typeof fetch;
-  const result = await new MfpClient().logFood({ food_id: "42", date: "2026-10-11", meal_position: 0, servings: 2 });
+  const result = await new MfpClient().logFood({ food_id: "42", date: "2026-10-11", meal_position: 0, servings: 2, allow_duplicate: true });
   expect(result.persisted).toBe(true);
   expect(submitted.items[0].food).toEqual({ id: "42", version: "42" });
   expect(submitted.items[0].serving_size).toEqual({ unit: "g", value: 100, nutrition_multiplier: 1 });
+});
+
+test("matching diary food blocks another write until explicitly allowed", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  let writes = 0;
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/services/foods/42") return Response.json({ item: { id: "42",
+      serving_sizes: [{ id: "size-1", value: 100, unit: "g", nutrition_multiplier: 1 }] } });
+    if (path === "/api/services/diary/profile") return Response.json({ username: "sample" });
+    if (path === "/api/services/diary/read_diary") return Response.json([{
+      id: "existing-1", type: "food_entry", date: "2026-10-18", deleted: false,
+      food: { id: "42" }, meal_position: 1, servings: 1.53,
+      serving_size: { id: "size-1", value: 100, unit: "g" },
+    }]);
+    if (path === "/api/services/diary" && init?.method === "POST") { writes++; return Response.json({ items: [{ id: "new-1" }] }); }
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  const client = new MfpClient();
+  const args = { food_id: "42", date: "2026-10-18", meal_position: 1, servings: 1.53 };
+  await expect(client.logFood(args)).rejects.toMatchObject({ code: "DUPLICATE_EXISTS" });
+  expect(writes).toBe(0);
+  await client.logFood({ ...args, allow_duplicate: true });
+  expect(writes).toBe(1);
+});
+
+test("diary logging verifies the returned ID when the date listing is empty", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/services/foods/42") return Response.json({ item: { id: "42", serving_sizes: [
+      { id: "size-1", value: 217, unit: "g", nutrition_multiplier: 1 },
+    ] } });
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/diary/profile") return Response.json({ username: "sample" });
+    if (path === "/api/services/diary") return Response.json({ items: [{ id: "entry-1" }] });
+    if (path === "/api/services/diary/read_diary") return Response.json([]);
+    if (path === "/api/services/live-digest") return Response.json({ weekly_digest: { weekly_metrics: { entry_count: 0 } } });
+    if (path === "/api/services/diary/entry-1") return Response.json({ item: {
+      id: "entry-1", type: "food_entry", deleted: false, date: "2026-10-18",
+      food: { id: "42" }, meal_position: 1, servings: 1.11981999874115,
+      serving_size: { id: "size-1", value: 217, unit: "g" },
+    } });
+    throw new Error(`Unexpected path ${path}`);
+  }) as typeof fetch;
+  const result = await new MfpClient().logFood({ food_id: "42", date: "2026-10-18",
+    meal_position: 1, servings: 1.1198156682 });
+  expect(result).toMatchObject({ persisted: true, diary_entry_id: "entry-1",
+    verified_by: "entry_id", diary_visible: false });
+  expect(result.visibility_warning).toContain("app display is unverified");
+});
+
+test("an empty diary listing with counted entries is reported as inconsistent", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/services/diary/profile") return Response.json({ username: "sample" });
+    if (path === "/api/services/diary/read_diary") return Response.json([]);
+    if (path === "/api/services/live-digest") return Response.json({ weekly_digest: {
+      weekly_metrics: { entry_count: 3 },
+    } });
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  await expect(new MfpClient().diary("2026-10-18")).rejects.toMatchObject({
+    code: "DIARY_LIST_INCONSISTENT",
+  });
 });
 
 test("serving labels match normalized value and unit, and an unknown amount lists all options", async () => {
@@ -201,8 +290,10 @@ test("serving labels match normalized value and unit, and an unknown amount list
       { id: "large", value: 250, unit: "ml", nutrition_multiplier: 2.5 },
     ] } });
     if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/diary/profile") return Response.json({ username: "sample" });
     if (path === "/api/services/diary") { submitted = JSON.parse(String(init?.body)); return Response.json({ items: [{ id: "entry-1" }] }); }
     if (path === "/api/services/diary/read_diary") return Response.json([]);
+    if (path === "/api/services/live-digest") return Response.json({ weekly_digest: { weekly_metrics: { entry_count: 0 } } });
     throw new Error(`Unexpected ${path}`);
   }) as typeof fetch;
   const client = new MfpClient();
@@ -238,14 +329,16 @@ test("net carbohydrate input is converted to explicit total and net output", asy
     fiber: 9, carbohydrate_basis: "net" });
 });
 
-test("diary deletion reads back the affected date", async () => {
+test("diary deletion verifies the exact entry ID", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
   let deleted = false;
   globalThis.fetch = (async (input, init) => {
     const path = new URL(String(input)).pathname;
     if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
     if (path === "/api/services/diary/entry-1" && init?.method === "DELETE") { deleted = true; return Response.json({}); }
-    if (path === "/api/services/diary/entry-1") return Response.json({ item: { id: "entry-1", date: "2026-10-11" } });
+    if (path === "/api/services/diary/entry-1") return deleted
+      ? new Response(null, { status: 404 })
+      : Response.json({ item: { id: "entry-1", date: "2026-10-11" } });
     if (path === "/api/services/diary/read_diary") return Response.json(deleted ? [] : [{ id: "entry-1" }]);
     throw new Error(`Unexpected ${path}`);
   }) as typeof fetch;
@@ -253,15 +346,34 @@ test("diary deletion reads back the affected date", async () => {
     entry: null, diary_entry_id: "entry-1" });
 });
 
+test("an empty date listing cannot falsely confirm deletion", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
+    if (path === "/api/services/diary/entry-1" && init?.method === "DELETE") return Response.json({});
+    if (path === "/api/services/diary/entry-1") return Response.json({ item: {
+      id: "entry-1", date: "2026-10-11", deleted: false,
+    } });
+    if (path === "/api/services/diary/read_diary") return Response.json([]);
+    throw new Error(`Unexpected ${path}`);
+  }) as typeof fetch;
+  const result = await new MfpClient().deleteDiaryEntry("entry-1");
+  expect(result).toMatchObject({ persisted: false, diary_entry_id: "entry-1" });
+});
+
 test("failed diary read-back retains the ID returned by logging", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
+  let submitted = false;
   globalThis.fetch = (async (input) => {
     const path = new URL(String(input)).pathname;
     if (path === "/api/services/foods/42") return Response.json({ item: { id: "42",
       serving_sizes: [{ value: 1, unit: "serving", nutrition_multiplier: 1 }] } });
     if (path === "/api/auth/csrf") return Response.json({ csrfToken: "csrf-test" });
-    if (path === "/api/services/diary") return Response.json({ items: [{ id: "entry-1" }] });
-    if (path === "/api/services/diary/read_diary") return new Response(null, { status: 503 });
+    if (path === "/api/services/diary/profile") return Response.json({ username: "sample" });
+    if (path === "/api/services/diary") { submitted = true; return Response.json({ items: [{ id: "entry-1" }] }); }
+    if (path === "/api/services/diary/read_diary") return submitted ? new Response(null, { status: 503 }) : Response.json([]);
+    if (path === "/api/services/live-digest") return Response.json({ weekly_digest: { weekly_metrics: { entry_count: 0 } } });
     throw new Error(`Unexpected ${path}`);
   }) as typeof fetch;
   const result = await new MfpClient().logFood({ food_id: "42", date: "2026-10-11", meal_position: 0, servings: 1 });
@@ -279,56 +391,65 @@ test("authenticated redirects have a stale-session code and profile hint", async
   }
 });
 
-test("food search uses the Next.js data route and encoded params", async () => {
+test("food search uses the current nutrition API and translates zero-based pages", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
   const requests: string[] = [];
   globalThis.fetch = (async (input, init) => {
     const url = new URL(String(input));
     requests.push(url.pathname + url.search);
-    if (url.pathname === "/") {
-      expect(new Headers(init?.headers).get("cookie")).toBeNull();
-      return new Response('<script id="__NEXT_DATA__">{"buildId":"test-build"}</script>');
-    }
-    expect(url.pathname).toBe("/_next/data/test-build/food/calorie-chart-nutrition-facts.json");
-    expect(JSON.parse(url.searchParams.get("params")!)).toEqual(["banana & pear", 2]);
+    expect(url.pathname).toBe("/api/nutrition");
+    expect(Object.fromEntries(url.searchParams)).toEqual({ query: "banana & pear", page: "3",
+      offset: "10", max_items: "100", country_code: "US", resource_type: "foods" });
     expect(new Headers(init?.headers).get("cookie")).toContain("synthetic-session");
-    return Response.json({ pageProps: { dehydratedState: { queries: [{
-      queryKey: ["food", "banana & pear", 2],
-      state: { data: { items: [{ item: { id: "banana-1", description: "Banana", brand_name: "Generic" } }] } },
-    }] } } });
+    return Response.json({ items: [{ item: { id: "banana-1", description: "Banana", brand_name: "Generic" } }] });
   }) as typeof fetch;
 
   const foods = await new MfpClient().search("banana & pear", 2);
-  expect(foods[0]).toMatchObject({ id: "banana-1", name: "Banana" });
-  expect(requests).toHaveLength(2);
-  expect(requests[0]).toBe("/");
+  expect(foods[0]).toMatchObject({ id: "banana-1", name: "Banana", source: "myfitnesspal_catalog" });
+  expect(requests).toHaveLength(1);
 });
 
-test("food search reports a redirected data request as a stale website session", async () => {
+test("food search reports a redirected API request as a stale session", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
-  globalThis.fetch = (async (input) => new URL(String(input)).pathname === "/"
-    ? new Response('"buildId":"test-build"')
-    : new Response(null, { status: 302, headers: { location: "/account/logout" } })) as typeof fetch;
+  globalThis.fetch = (async () => new Response(null, { status: 302,
+    headers: { location: "/account/logout" } })) as unknown as typeof fetch;
   await expect(new MfpClient(undefined, "work", true).search("banana")).rejects.toMatchObject({
     code: "MFP_SESSION_STALE", hint: "re-run auth for profile work",
   });
 });
 
-test("food search reports a Next.js redirect embedded in a 200 response as a stale session", async () => {
+test("food search uses loggable My Foods IDs when the catalog returns 404", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
-  globalThis.fetch = (async (input) => new URL(String(input)).pathname === "/"
-    ? new Response('"buildId":"test-build"')
-    : Response.json({ pageProps: { __N_REDIRECT: "/account/logout", __N_REDIRECT_STATUS: 307 } })) as typeof fetch;
+  const paths: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const path = new URL(String(input)).pathname;
+    paths.push(path);
+    if (path === "/api/nutrition") return Response.json({ items: [] }, { status: 404 });
+    if (path === "/api/services/users/foods/mine") return Response.json({ items: [{ item: {
+      id: "owned-banana", description: "Banana, raw", brand_name: "USDA FoodData Central",
+      serving_sizes: [{ unit: "g", value: 100 }],
+    } }] });
+    throw new Error(`Unexpected path ${path}`);
+  }) as typeof fetch;
+  await expect(new MfpClient().search("banana")).resolves.toMatchObject([{
+    id: "owned-banana", name: "Banana, raw", source: "my_foods",
+    servings: [{ unit: "g", value: 100 }],
+  }]);
+  expect(paths).toEqual(["/api/nutrition", "/api/services/users/foods/mine"]);
+});
+
+test("food search reports catalog failure when My Foods has no matches", async () => {
+  process.env.MFP_COOKIE = "synthetic-session";
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => new URL(String(input)).pathname === "/api/nutrition"
+    ? Response.json({ items: [] }, { status: 404 }) : Response.json({ items: [] })) as unknown as typeof fetch;
   await expect(new MfpClient().search("banana")).rejects.toMatchObject({
-    code: "MFP_SESSION_STALE", status: 307, hint: "re-run auth for profile default",
+    code: "SEARCH_UNAVAILABLE", status: 404,
   });
 });
 
-test("food search rejects generic chart data instead of reporting no matches", async () => {
+test("food search rejects malformed API data instead of reporting no matches", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
-  globalThis.fetch = (async (input) => new URL(String(input)).pathname === "/"
-    ? new Response('"buildId":"test-build"')
-    : Response.json({ pageProps: { dehydratedState: { queries: [] } } })) as typeof fetch;
+  globalThis.fetch = (async () => Response.json({ pageProps: { dehydratedState: { queries: [] } } })) as unknown as typeof fetch;
   await expect(new MfpClient().search("banana")).rejects.toThrow("changed its food search response");
 });
 
@@ -362,13 +483,16 @@ test("diary edit refuses to move an entry when its meal is unknown", async () =>
 
 test("diary read requests both meal totals and food entries", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
-  let path = "";
+  const paths: string[] = [];
   globalThis.fetch = (async (input) => {
-    path = new URL(String(input)).pathname + new URL(String(input)).search;
+    const path = new URL(String(input)).pathname;
+    paths.push(path + new URL(String(input)).search);
+    if (path === "/api/services/diary/profile") return Response.json({ username: "sample" });
     return Response.json([]);
   }) as typeof fetch;
   await new MfpClient().diary("2026-10-11");
-  expect(path).toBe("/api/services/diary/read_diary?date=2026-10-11&types=diary_meal%2Cfood_entry%2Cexercise_entry");
+  expect(paths[0]).toBe("/api/services/diary/profile");
+  expect(paths[1]).toBe("/api/services/diary/read_diary?entry_date=2026-10-11&fields=all&types=diary_meal%2Cfood_entry%2Cexercise_entry&username=sample");
 });
 
 test("nutrition goal update preserves other fields and verifies saved targets", async () => {
@@ -424,7 +548,8 @@ test("timezone update preserves profile fields and verifies the saved timezone",
 
 test("recent foods are derived from diary entries", async () => {
   process.env.MFP_COOKIE = "synthetic-session";
-  globalThis.fetch = (async () => Response.json([
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => new URL(String(input)).pathname === "/api/services/diary/profile"
+    ? Response.json({ username: "sample" }) : Response.json([
     { type: "diary_meal", diary_meal: "Snacks" },
     { type: "food_entry", food: { id: "banana-1", description: "Banana" }, logged_at: "2026-10-11T12:00:00Z" },
     { type: "food_entry", food: { id: "banana-1", description: "Banana" }, logged_at: "2026-10-11T13:00:00Z" },

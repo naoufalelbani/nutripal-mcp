@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { MfpClient, unwrapFood, withProfileWriteLock } from "./mfp.ts";
+import { searchFood, importUsdaFood } from "./usda.ts";
 
 const args = process.argv.slice(2);
 const query = args[0];
@@ -17,12 +18,7 @@ if (!query || !Number.isFinite(grams) || grams <= 0 || !date || !/^\d{4}-\d{2}-\
 
 const client = new MfpClient();
 await client.account();
-let matches = await client.search(query);
-if (!matches.length) {
-  const mine = await client.ownFoods(query);
-  matches = mine.map((food: any) => ({ id: food.id, name: food.description, brand: food.brand_name,
-    verified: food.verified, servings: food.serving_sizes, nutrition: food.nutritional_contents }));
-}
+const matches = await searchFood(client, query);
 if (!matches.length) throw new Error(`No foods found for '${query}'`);
 
 const normalizedQuery = query.toLowerCase();
@@ -40,10 +36,14 @@ const choices = matches.map((food, index) => ({ food, index }))
   .slice(0, 20).map(({ food }) => food);
 console.log(`Choose the food to log (${grams} g on ${date}, ${meal}):`);
 choices.forEach((food, index) => {
-  const baseGrams = Number((food.nutrition as any)?.grams);
+  const gramServing = food.servings?.find((size: any) => /^(g|gram|grams)$/i.test(String(size.unit))
+    && Number(size.value) > 0);
+  const baseGrams = Number(gramServing?.value);
+  const multiplier = Number(gramServing?.nutrition_multiplier ?? 1);
   const energy = Number((food.nutrition as any)?.energy?.value);
-  const calories = baseGrams > 0 && Number.isFinite(energy) ? `, ${(energy / baseGrams * 100).toFixed(0)} kcal/100 g` : "";
-  console.log(`${index + 1}. ${food.name} — ${food.brand || "Generic"}${calories} [${food.id}]`);
+  const calories = baseGrams > 0 && Number.isFinite(multiplier) && Number.isFinite(energy)
+    ? `, ${(energy * multiplier / baseGrams * 100).toFixed(0)} kcal/100 g` : "";
+  console.log(`${index + 1}. ${food.name} — ${food.brand || "Generic"}${calories} [${food.id}, ${food.source}]`);
 });
 if (!process.stdin.isTTY) throw new Error("Food selection requires an interactive terminal");
 const terminal = createInterface({ input: process.stdin, output: process.stdout });
@@ -53,15 +53,19 @@ finally { terminal.close(); }
 if (!Number.isInteger(selection) || selection < 1 || selection > choices.length) throw new Error("Invalid food number; nothing was logged");
 
 const chosen = choices[selection - 1]!;
-const details = unwrapFood(await client.food(String(chosen.id)));
+const imported = chosen.source === "usda_fdc"
+  ? await withProfileWriteLock(client.profile, () => importUsdaFood(client, Number(String(chosen.id).slice(5)))) : null;
+const selectedId = imported ? String(unwrapFood(imported.food).id) : String(chosen.id);
+const details = unwrapFood(await client.food(selectedId));
 const sizes = Array.isArray(details.serving_sizes) ? details.serving_sizes : [];
 const gramSize = sizes.find((size: any) => /^(g|gram|grams)$/i.test(String(size.unit)) && Number(size.value) > 0);
 if (!gramSize) throw new Error("This food has no gram serving size; nothing was logged. Choose another result.");
 const servings = grams / Number(gramSize.value);
-const result = await withProfileWriteLock(client.profile, () => client.logFood({ food_id: String(chosen.id),
+const result = await withProfileWriteLock(client.profile, () => client.logFood({ food_id: selectedId,
   date, meal_position: positions[meal]!, servings, serving_unit: String(gramSize.unit) }));
 console.log(JSON.stringify({ logged: result.persisted, date, meal, food: chosen.name, grams, servings,
-  food_id: chosen.id, entry_id: result.diary_entry_id, reason: result.reason }, null, 2));
+  food_id: selectedId, source: chosen.source, imported: imported?.created ?? false,
+  entry_id: result.diary_entry_id, reason: result.reason }, null, 2));
 if (!result.persisted) process.exitCode = 1;
 
 function localDate() {
